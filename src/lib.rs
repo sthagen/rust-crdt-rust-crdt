@@ -49,6 +49,9 @@ pub mod ctx;
 /// This module contains a Sequence.
 pub mod lseq;
 
+/// Version Vector with Exceptions
+pub mod vvwe;
+
 /// Top-level re-exports for CRDT structures.
 pub use crate::{
     dot::Dot, gcounter::GCounter, gset::GSet, lwwreg::LWWReg, map::Map, mvreg::MVReg,
