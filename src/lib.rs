@@ -46,7 +46,9 @@ pub mod map;
 /// This module contains context for editing a CRDT.
 pub mod ctx;
 
-/// Top-level re-exports for CRDT structures.
+/// Version Vector with Exceptions
+pub mod vvwe;
+
 pub use crate::{
     dot::Dot, gcounter::GCounter, gset::GSet, lwwreg::LWWReg, map::Map, mvreg::MVReg,
     orswot::Orswot, pncounter::PNCounter, vclock::VClock,
