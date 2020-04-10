@@ -9,33 +9,7 @@
 
 use derive_more::{Add, From, Into};
 use std::collections::*;
-use serde::{Deserialize, Deserializer, self, Serialize};
-
-/// Temporary
-#[derive(PartialEq, Eq, Debug, Copy, Clone, Hash, PartialOrd, Ord, From, Deserialize, Serialize)]
-pub struct SiteId(
-    #[serde(deserialize_with = "deserialize_number_from_string")]
-    pub u32);
-use std::str::FromStr;
-
-fn deserialize_number_from_string<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: FromStr + serde::Deserialize<'de>,
-    <T as FromStr>::Err: core::fmt::Display,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrInt<T> {
-        String(String),
-        Number(T),
-    }
-
-    match StringOrInt::<T>::deserialize(deserializer)? {
-        StringOrInt::String(s) => s.parse::<T>().map_err(serde::de::Error::custom),
-        StringOrInt::Number(i) => Ok(i),
-    }
-}
+use serde::{Deserialize, self, Serialize};
 
 /// Temporary move to dot
 #[derive(PartialEq, Eq, Debug, Copy, Clone, PartialOrd, Ord, Hash, Add, From, Into, Deserialize, Serialize)]
@@ -44,11 +18,10 @@ pub struct LogTime(u64);
 
 /// Version Vector with Exceptions
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CausalityBarrier<T: CausalOp> {
-    peers: HashMap<SiteId, VectorEntry>,
-    // Do we really need a map or just a set?
-    local_id: SiteId,
-    pub buffer: HashMap<(SiteId, LogTime), T>,
+pub struct CausalityBarrier<A: Actor, T: CausalOp<A>> {
+    peers: HashMap<A, VectorEntry>,
+    local_id: A,
+    pub buffer: HashMap<(A, LogTime), T>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -99,19 +72,21 @@ impl VectorEntry {
     }
 }
 
-pub trait CausalOp {
+use crate::vclock::{Actor, Dot};
+
+pub trait CausalOp<A> {
     // type Id : Eq + Hash;
     /// Tells us the id we causally depend on
     /// Remove(X) depends on X
     /// Insert(Y) depends on nothing.
-    fn happens_before(&self) -> Option<(SiteId, LogTime)>;
-    fn site(&self) -> SiteId;
+    fn happens_before(&self) -> Option<Dot<A>>;
+    fn site(&self) -> A;
     fn clock(&self) -> LogTime;
     // fn id(&self) -> Self::Id;
 }
 
-impl<T: CausalOp> CausalityBarrier<T> {
-    pub fn new(site_id: SiteId) -> Self {
+impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
+    pub fn new(site_id: A) -> Self {
         CausalityBarrier { peers: HashMap::new(), buffer: HashMap::new(), local_id: site_id }
     }
 
@@ -132,8 +107,8 @@ impl<T: CausalOp> CausalityBarrier<T> {
             // Dang! we have a happens before relation!
             Some(op) => {
                 // Let's buffer this operation then.
-                if ! self.saw_site_do(&op.0, &op.1) {
-                    self.buffer.insert(op, msg);
+                if ! self.saw_site_do(&op.actor, &op.counter.into()) {
+                    self.buffer.insert((op.actor, op.counter.into()), msg);
                 // and do nothing
                     None
                 } else {
@@ -151,8 +126,8 @@ impl<T: CausalOp> CausalityBarrier<T> {
         }
     }
 
-    fn saw_site_do(&self, site: &SiteId, t: &LogTime) -> bool {
-        match self.peers.get(&site) {
+    fn saw_site_do(&self, site: &A, t: &LogTime) -> bool {
+        match self.peers.get(site) {
             Some(ent) => ent.is_ready(t),
             None => { false }
         }
@@ -164,19 +139,19 @@ impl<T: CausalOp> CausalityBarrier<T> {
         msg
     }
 
-    pub fn diff_from(&self, other: &HashMap<SiteId, VectorEntry>) -> HashMap<SiteId, HashSet<LogTime>> {
+    pub fn diff_from(&self, other: &HashMap<A, VectorEntry>) -> HashMap<A, HashSet<LogTime>> {
         let mut ret = HashMap::new();
         for (site_id, entry) in self.peers.iter() {
             let e_diff = match other.get(site_id) {
                 Some(remote_entry) => entry.diff_from(remote_entry),
                 None => (0..entry.max_version.into()).map(LogTime::from).collect(),
             };
-            ret.insert(*site_id, e_diff);
+            ret.insert(site_id.clone(), e_diff);
         }
         ret
     }
 
-    pub fn vvwe(&self) -> HashMap<SiteId, VectorEntry> {
+    pub fn vvwe(&self) -> HashMap<A, VectorEntry> {
         self.peers.clone()
     }
 
@@ -185,6 +160,8 @@ impl<T: CausalOp> CausalityBarrier<T> {
 #[cfg(test)]
 mod test {
     use super::*;
+    #[derive(PartialEq, Eq, Debug, Copy, Clone, Hash, PartialOrd, Ord, From, Deserialize, Serialize)]
+    pub struct SiteId(pub u32);
 
     #[derive(PartialEq, Debug, Hash, Clone)]
     enum Op {
@@ -201,13 +178,13 @@ mod test {
         msg: Op,
     }
 
-    impl CausalOp for CausalMessage {
+    impl CausalOp<SiteId> for CausalMessage {
         // type Id = u64;
 
-        fn happens_before(&self) -> Option<(SiteId, LogTime)> {
+        fn happens_before(&self) -> Option<Dot<SiteId>> {
             match self.msg {
                 Op::Insert(_) => None,
-                Op::Delete(s, l) => Some((s, l)),
+                Op::Delete(s, l) => Some(Dot::new(s, l.into())),
             }
         }
 
