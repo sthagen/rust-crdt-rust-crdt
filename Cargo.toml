@@ -17,10 +17,10 @@ path = "test/test.rs"
 [dependencies]
 num-bigint = "0.2.1"
 serde = { version = "1.0", features = ["derive"] }
+rand = "0.7.3"
 
 [dev-dependencies]
 quickcheck = "0.6.2"
-rand = "0.4"
 
 [profile.release]
 debug = true

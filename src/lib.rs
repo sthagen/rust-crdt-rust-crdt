@@ -16,6 +16,9 @@ pub use crate::error::Error;
 mod traits;
 pub use crate::traits::{Causal, CmRDT, CvRDT, FunkyCmRDT, FunkyCvRDT};
 
+/// This module contains an LSeq, a variable-size identifiers class of sequence CRDT.
+pub mod lseq;
+
 /// This module contains a Last-Write-Wins Register.
 pub mod lwwreg;
 
@@ -46,6 +49,7 @@ pub mod ctx;
 pub use crate::{
     gcounter::GCounter,
     gset::GSet,
+    lseq::LSeq,
     lwwreg::LWWReg,
     map::Map,
     mvreg::MVReg,
