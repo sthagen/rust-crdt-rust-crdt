@@ -44,6 +44,10 @@ impl Identifier {
         self
     }
 
+    pub fn remove(&mut self, index: usize) -> u64 {
+        self.0.remove(index)
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -79,7 +83,7 @@ type IdNodeMap<V, A> = BTreeMap<u64, (VClock<A>, Atom<V, A>)>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Siblings<V: Ord + Clone, A: Actor>(IdNodeMap<V, A>);
 
-impl<V: Ord + Clone + Display, A: Actor + Display> Siblings<V, A> {
+impl<V: Ord + Clone + Display + Default, A: Actor + Display> Siblings<V, A> {
     /// Create a new and empty set of siblings nodes
     pub fn new() -> Self {
         Self(BTreeMap::default())
@@ -93,33 +97,33 @@ impl<V: Ord + Clone + Display, A: Actor + Display> Siblings<V, A> {
         &mut self.0
     }
 
-    /// Find an atom in the tree using its identifier
-    #[allow(dead_code)]
-    pub fn find_atom(&self, id: &Identifier) -> Option<(VClock<A>, Atom<V, A>)> {
-        let mut cur_atom = None;
-        let mut cur_depth_nodes = &self.0;
-        for i in 0..id.len() {
-            match cur_depth_nodes.get(&id.at(i)) {
-                Some(&(ref c, Atom::Node((ref v, ref siblings)))) => {
-                    if i < id.len() - 1 {
-                        // we found the intermediate node, keep going
-                        cur_depth_nodes = &siblings.0;
-                    } else {
-                        // found it as a node
-                        cur_atom = Some((c.clone(), Atom::Node((v.clone(), siblings.clone()))));
-                    }
+    /// Find the atom in the tree following the path of the given identifier and delete its value
+    pub fn delete_id(&mut self, mut id: Identifier) {
+        if id.len() > 1 {
+            let cur_number = id.remove(0);
+            match self.0.get_mut(&cur_number) {
+                Some(&mut (_, Atom::Node((_, ref mut siblings)))) => {
+                    // good, keep traversing the tree
+                    siblings.delete_id(id);
                 }
-                Some(&(ref c, Atom::Leaf(ref v))) if i == id.len() - 1 => {
-                    // found it as a leaf
-                    cur_atom = Some((c.clone(), Atom::Leaf(v.clone())));
-                }
-                None | Some(&(_, Atom::Leaf(_))) => {
-                    // not found
-                    cur_atom = None;
-                    break;
+                None | Some(&mut (_, Atom::Leaf(_))) => {
+                    // found a leaf already, then the id is not found in tree
                 }
             }
+        } else if !id.is_empty() {
+            match self.0.get(&id.at(0)) {
+                Some(&(ref c, Atom::Node((_, ref siblings)))) => {
+                    // found it as a node, we need to clear the value from it
+                    let new_atom = Atom::Node((V::default(), siblings.clone()));
+                    self.0.insert(id.at(0), (c.clone(), new_atom));
+                }
+                Some(&(_, Atom::Leaf(_))) => {
+                    // found it as leaf, we remove the leaf from the tree
+                    // TODO: we may need to keep it so we maintain the VClock for subsequent ops
+                    self.0.remove(&id.at(0));
+                }
+                None => { /* not found */ }
+            }
         }
-        cur_atom
     }
 }

@@ -18,7 +18,7 @@ const END_ID: u64 = std::u64::MAX;
 
 /// An LSeq, a variable-size identifiers class of sequence CRDT
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LSeq<V: Ord + Clone + Display, A: Actor + Display> {
+pub struct LSeq<V: Ord + Clone + Display + Default, A: Actor + Display> {
     /// Boundary for choosing a new identifier
     boundary: u8,
     /// Arity of the root tree node. The arity is doubled at each depth
@@ -30,7 +30,7 @@ pub struct LSeq<V: Ord + Clone + Display, A: Actor + Display> {
     tree: Siblings<V, A>,
 }
 
-impl<V: Ord + Clone + Display, A: Actor + Display> Default for LSeq<V, A> {
+impl<V: Ord + Clone + Display + Default, A: Actor + Display> Default for LSeq<V, A> {
     fn default() -> Self {
         Self::new()
     }
@@ -60,7 +60,7 @@ pub enum Op<V: Ord + Clone, A: Actor> {
     },
 }
 
-impl<V: Ord + Clone + Display, A: Actor + Display> Display for LSeq<V, A> {
+impl<V: Ord + Clone + Display + Default, A: Actor + Display> Display for LSeq<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "|")?;
         for (i, (ctx, val)) in self.tree.inner().iter().enumerate() {
@@ -73,7 +73,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> Display for LSeq<V, A> {
     }
 }
 
-impl<V: Ord + Clone + PartialEq + Display, A: Actor + Display> PartialEq for LSeq<V, A> {
+impl<V: Ord + Clone + PartialEq + Display + Default, A: Actor + Display> PartialEq for LSeq<V, A> {
     fn eq(&self, other: &Self) -> bool {
         for (_, (dot, _)) in self.tree.inner() {
             let num_found = other
@@ -107,9 +107,9 @@ impl<V: Ord + Clone + PartialEq + Display, A: Actor + Display> PartialEq for LSe
     }
 }
 
-impl<V: Ord + Clone + Eq + Display, A: Actor + Display> Eq for LSeq<V, A> {}
+impl<V: Ord + Clone + Eq + Display + Default, A: Actor + Display> Eq for LSeq<V, A> {}
 
-impl<V: Ord + Clone + Clone + Display, A: Actor + Display> Causal<A> for LSeq<V, A> {
+impl<V: Ord + Clone + Clone + Display + Default, A: Actor + Display> Causal<A> for LSeq<V, A> {
     fn forget(&mut self, _clock: &VClock<A>) {
         /*self.tree = self
         .tree
@@ -127,7 +127,7 @@ impl<V: Ord + Clone + Clone + Display, A: Actor + Display> Causal<A> for LSeq<V,
     }
 }
 
-impl<V: Ord + Clone + Display, A: Actor + Display> CmRDT for LSeq<V, A> {
+impl<V: Ord + Clone + Display + Default, A: Actor + Display> CmRDT for LSeq<V, A> {
     type Op = Op<V, A>;
 
     fn apply(&mut self, op: Self::Op) {
@@ -171,21 +171,22 @@ impl<V: Ord + Clone + Display, A: Actor + Display> CmRDT for LSeq<V, A> {
                 self.alloc_id(p, q, clock, value);
             }
             Op::Delete { id, .. } => {
-                // TODO
-                println!("TODO: delete {}", id);
+                println!("\n\nDELETING {}", id);
+                // Delete atom from the tree which contains the given identifier
+                self.tree.delete_id(id);
             }
         }
     }
 }
 
 // Number of binary digits of a number
-macro_rules! num_binary_digits {
+macro_rules! num_of_binary_digits {
     ($x:ident) => {
         ($x as f64).log2().floor() as u32 + 1
     };
 }
 
-impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
+impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
     /// Construct a new empty LSeq
     pub fn new() -> Self {
         Self {
@@ -377,9 +378,10 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         let mut q_position = 0;
         let mut new_id_depth = 0;
         loop {
+            let arity = self.arity_at(new_id_depth);
             println!(
-                "Checking interval at depth {} between {} and {}...",
-                new_id_depth, p, q
+                "Checking interval at depth {} between {} and {}, arity {}...",
+                new_id_depth, p, q, arity
             );
 
             if new_id_depth > p.len() && new_id_depth > q.len() {
@@ -389,7 +391,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             // Calculate position of p at current depth
             if new_id_depth < p.len() {
                 let i = p.at(new_id_depth);
-                p_position = (p_position << num_binary_digits!(i)) + i;
+                p_position = (p_position << num_of_binary_digits!(i)) + i;
             } else {
                 let arity = self.arity_at(new_id_depth);
                 let shift = (arity as f64).log2() as u32;
@@ -399,7 +401,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             // Calculate position of q at current depth
             if new_id_depth < q.len() {
                 let i = q.at(new_id_depth);
-                q_position = (q_position << num_binary_digits!(i)) + i;
+                q_position = (q_position << num_of_binary_digits!(i)) + i;
             } else {
                 let arity = self.arity_at(new_id_depth);
                 let shift = (arity as f64).log2() as u32;
@@ -428,7 +430,6 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     }
 
     /// Get a new number to insert in either p or q side at a given depth based on the depth's strategy
-    /// Here, as opposed to the paper, we don't use random but a deterministic function for it
     fn gen_new_number(
         &self,
         depth: usize,
@@ -447,8 +448,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 BEGIN_ID
             };
 
-            // thread_rng().gen_range(p_id + 1, p_id + step + 1)
-            let n = reference_num + (step / 2) + 1;
+            let n = thread_rng().gen_range(reference_num + 1, reference_num + step + 1);
+            //let n = reference_num + (step / 2) + 1;
             println!("STEP boundary+ (step {}): {}", step, n);
             n
         } else {
@@ -459,8 +460,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 self.arity_at(depth) - 1 // == END at new id's depth
             };
 
-            // let n = thread_rng().gen_range(q_id - step, q_id)
-            let n = reference_num - (step / 2) - 1;
+            let n = thread_rng().gen_range(reference_num - step, reference_num);
+            //let n = reference_num - (step / 2) - 1;
             println!("STEP boundary- (step {}): {}", step, n);
             n
         }
@@ -501,6 +502,19 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 mod test {
     use super::*;
 
+    // Helper to prepopulate an LSeq ith some elements
+    fn populate_seq<V: Ord + Clone + Display + Default, A: Actor + Display>(
+        elems: &[V],
+        seq: &mut LSeq<V, A>,
+        actor: A,
+    ) {
+        for e in elems {
+            // Insert e between BEGIN and END
+            let add_ctx = seq.read_ctx().derive_add_ctx(actor.clone());
+            seq.apply(seq.insert(e.clone(), None, None, add_ctx.clone()));
+        }
+    }
+
     #[test]
     fn test_default() {
         let seq = LSeq::<u64, u64>::default();
@@ -517,6 +531,79 @@ mod test {
 
     #[test]
     fn test_insert() {
+        let mut seq = LSeq::<char, u64>::new();
+        let actor = 100;
+
+        // Insert A to [] (between BEGIN and END)
+        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
+        seq.apply(seq.insert('A', None, None, add_ctx.clone()));
+
+        let current_seq = seq.read().val;
+        println!("SEQ [A]: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 1);
+        assert_eq!(current_seq[0].1, 'A');
+
+        // Insert B to [A] (between A and END)
+        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
+        let (id_of_a, _) = &current_seq[0];
+        seq.apply(seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone()));
+
+        let current_seq = seq.read().val;
+        println!("SEQ [A, B]: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 2);
+        assert_eq!(current_seq[0].1, 'A');
+        assert_eq!(current_seq[1].1, 'B');
+    }
+
+    #[test]
+    fn test_delete() {
+        let mut seq = LSeq::<char, u64>::new();
+        let actor = 100;
+
+        // Insert A to [] (between BEGIN and END)
+        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
+        seq.apply(seq.insert('A', None, None, add_ctx.clone()));
+
+        let current_seq = seq.read().val;
+        println!("SEQ [A]: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 1);
+        assert_eq!(current_seq[0].1, 'A');
+
+        // Insert B to [A] (between A and END)
+        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
+        let (id_of_a, _) = &current_seq[0];
+        seq.apply(seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone()));
+
+        let current_seq = seq.read().val;
+        println!("SEQ [A, B]: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 2);
+        assert_eq!(current_seq[0].1, 'A');
+        assert_eq!(current_seq[1].1, 'B');
+
+        // Delete B from [A, B]
+        let rm_ctx = seq.read_ctx().derive_rm_ctx();
+        let (id_of_b, _) = &current_seq[1];
+        seq.apply(seq.delete(id_of_b.clone(), rm_ctx.clone()));
+
+        let current_seq = seq.read().val;
+        println!("SEQ [A]: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 1);
+        assert_eq!(current_seq[0].1, 'A');
+    }
+
+    #[test]
+    #[ignore]
+    fn test_insert_new_depth() {
+        let mut seq = LSeq::<char, u64>::new();
+        let actor = 100;
+        populate_seq(&['A', 'B'], &mut seq, actor);
+
+        let current_seq = seq.read().val;
+        println!("SEQ: {:?}", current_seq);
+    }
+
+    #[test]
+    fn test_several_insertions() {
         let mut seq = LSeq::<char, u64>::new();
         let actor = 100;
 
