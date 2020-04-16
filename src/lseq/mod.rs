@@ -12,7 +12,7 @@ use std::{
 };
 
 const DEFAULT_STRATEGY_BOUNDARY: u8 = 10;
-const DEFAULT_ROOT_BASE: u8 = 32;
+const DEFAULT_ROOT_BASE: u8 = 32; // This needs to be greater than boundary, and probably needs to be a power of 2
 const BEGIN_ID: u64 = 0;
 const END_ID: u64 = std::u64::MAX;
 
@@ -177,13 +177,6 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> CmRDT for LSeq<V, A
             }
         }
     }
-}
-
-// Number of binary digits of a number
-macro_rules! num_of_binary_digits {
-    ($x:ident) => {
-        ($x as f64).log2().floor() as u32 + 1
-    };
 }
 
 impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
@@ -389,22 +382,19 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
             }
 
             // Calculate position of p at current depth
+            let shift = (arity as f64).log2() as u32;
             if new_id_depth < p.len() {
                 let i = p.at(new_id_depth);
-                p_position = (p_position << num_of_binary_digits!(i)) + i;
+                p_position = (p_position << shift) + i;
             } else {
-                let arity = self.arity_at(new_id_depth);
-                let shift = (arity as f64).log2() as u32;
-                p_position = (p_position << shift) + arity - 1;
+                p_position = p_position << shift;
             }
 
             // Calculate position of q at current depth
             if new_id_depth < q.len() {
                 let i = q.at(new_id_depth);
-                q_position = (q_position << num_of_binary_digits!(i)) + i;
+                q_position = (q_position << shift) + i;
             } else {
-                let arity = self.arity_at(new_id_depth);
-                let shift = (arity as f64).log2() as u32;
                 q_position = (q_position << shift) + arity - 1;
             }
 
