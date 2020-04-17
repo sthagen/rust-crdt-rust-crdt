@@ -17,7 +17,6 @@ use crate::{Actor, Dot};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CausalityBarrier<A: Actor, T: CausalOp<A>> {
     peers: HashMap<A, VectorEntry>,
-    local_id: A,
     // TODO: this dot here keying the T comes from `T::happens_after()`
     //       Why do we need to store this,
     pub buffer: HashMap<Dot<A>, T>,
@@ -85,11 +84,10 @@ pub trait CausalOp<A> {
 }
 
 impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
-    pub fn new(site_id: A) -> Self {
+    pub fn new() -> Self {
         CausalityBarrier {
             peers: HashMap::new(),
             buffer: HashMap::new(),
-            local_id: site_id,
         }
     }
 
@@ -193,7 +191,7 @@ mod test {
 
     #[test]
     fn delete_before_insert() {
-        let mut barrier = CausalityBarrier::new(0);
+        let mut barrier = CausalityBarrier::new();
 
         let del = CausalMessage {
             time: 0,
@@ -211,7 +209,7 @@ mod test {
 
     #[test]
     fn insert() {
-        let mut barrier = CausalityBarrier::new(0);
+        let mut barrier = CausalityBarrier::new();
 
         let ins = CausalMessage {
             time: 1,
@@ -223,7 +221,7 @@ mod test {
 
     #[test]
     fn insert_then_delete() {
-        let mut barrier = CausalityBarrier::new(0);
+        let mut barrier = CausalityBarrier::new();
 
         let ins = CausalMessage {
             time: 0,
@@ -241,7 +239,7 @@ mod test {
 
     #[test]
     fn delete_before_insert_multiple_sites() {
-        let mut barrier = CausalityBarrier::new(0);
+        let mut barrier = CausalityBarrier::new();
 
         let del = CausalMessage {
             time: 0,
