@@ -108,7 +108,7 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
             // Dang! we have a happens after relation!
             Some(dot) => {
                 // Let's buffer this operation then.
-                if !self.saw_site_do(&dot.actor, dot.counter) {
+                if !self.saw_site_dot(&dot) {
                     self.buffer.insert(dot, op);
                     // and do nothing
                     None
@@ -127,9 +127,10 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
         }
     }
 
-    fn saw_site_do(&self, site: &A, t: LogTime) -> bool {
-        match self.peers.get(site) {
-            Some(ent) => ent.is_ready(t),
+    fn saw_site_dot(&self, dot: &Dot<A>) -> bool {
+	// TODO: shouldn't need to deconstruct a dot like this
+        match self.peers.get(&dot.actor) {
+            Some(ent) => ent.is_ready(dot.counter),
             None => false,
         }
     }
