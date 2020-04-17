@@ -11,11 +11,14 @@ use std::collections::*;
 
 use serde::{self, Deserialize, Serialize};
 
-use crate::{Actor, Dot};
+use crate::{Actor, Dot, VClock};
 
 /// Version Vector with Exceptions
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CausalityBarrier<A: Actor, T: CausalOp<A>> {
+    knowledge: VClock<A>,
+    exceptions: HashMap<A, HashMap<Dot<A>, T>>, // Exceptions by source site
+
     peers: HashMap<A, VectorEntry>,
     // TODO: this dot here keying the T comes from `T::happens_after()`
     //       Why do we need to store this,
@@ -86,6 +89,8 @@ pub trait CausalOp<A> {
 impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
     pub fn new() -> Self {
         CausalityBarrier {
+	    knowledge: VClock::new(),
+	    exceptions: HashMap::new(),
             peers: HashMap::new(),
             buffer: HashMap::new(),
         }
