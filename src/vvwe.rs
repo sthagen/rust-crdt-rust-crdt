@@ -20,7 +20,7 @@ pub struct CausalityBarrier<A: Actor, T: CausalOp<A>> {
 
 type LogTime = u64;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct VectorEntry {
     // The version of the next message we'd like to see
     max_version: LogTime,
@@ -30,7 +30,7 @@ pub struct VectorEntry {
 
 impl VectorEntry {
     pub fn new() -> Self {
-        VectorEntry { max_version: 0, exceptions: HashSet::new() }
+        VectorEntry::default()
     }
 
     pub fn increment(&mut self, clk: LogTime) {
@@ -85,37 +85,37 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
         CausalityBarrier { peers: HashMap::new(), buffer: HashMap::new(), local_id: site_id }
     }
 
-    pub fn ingest(&mut self, msg: T) -> Option<T> {
-        let v = self.peers.entry(msg.dot().actor).or_insert_with(VectorEntry::new);
-        // Have we already seen this message?
-        if v.is_ready(&msg.dot().counter) {
+    pub fn ingest(&mut self, op: T) -> Option<T> {
+        let v = self.peers.entry(op.dot().actor).or_default();
+        // Have we already seen this op?
+        if v.is_ready(&op.dot().counter) {
             return None
         }
 
-        v.increment(msg.dot().counter);
+        v.increment(op.dot().counter);
 
         // Ok so it's an exception but maybe we can still integrate it if it's not constrained
         // by a happens-before relation.
         // For example: we can always insert into most CRDTs but we can only delete if the
         // corresponding insert happened before!
-        match msg.happens_after() {
-            // Dang! we have a happens before relation!
+        match op.happens_after() {
+            // Dang! we have a happens after relation!
             Some(dot) => {
                 // Let's buffer this operation then.
-                if ! self.saw_site_do(&dot.actor, &dot.counter) {
-                    self.buffer.insert(dot, msg);
-                // and do nothing
+                if !self.saw_site_do(&dot.actor, &dot.counter) {
+                    self.buffer.insert(dot, op);
+                    // and do nothing
                     None
                 } else {
-                    Some(msg)
+                    Some(op)
                 }
             }
             None => {
                 // Ok so we're not causally constrained, but maybe we already saw an associated
                 // causal operation? If so let's just delete the pair
-                match self.buffer.remove(&msg.dot()) {
+                match self.buffer.remove(&op.dot()) {
                     Some(_) => None,
-                    None => Some(msg),
+                    None => Some(op),
                 }
             }
         }
@@ -128,10 +128,10 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
         }
     }
 
-    pub fn expel(&mut self, msg: T) -> T {
-        let v = self.peers.entry(msg.dot().actor).or_insert_with(VectorEntry::new);
-        v.increment(msg.dot().counter);
-        msg
+    pub fn expel(&mut self, op: T) -> T {
+        let v = self.peers.entry(op.dot().actor).or_insert_with(VectorEntry::new);
+        v.increment(op.dot().counter);
+        op
     }
 
     pub fn diff_from(&self, other: &HashMap<A, VectorEntry>) -> HashMap<A, HashSet<LogTime>> {
@@ -170,12 +170,12 @@ mod test {
     pub struct CausalMessage {
         time: LogTime,
         local_id: SiteId,
-        msg: Op,
+        op: Op,
     }
 
     impl CausalOp<SiteId> for CausalMessage {
         fn happens_after(&self) -> Option<Dot<SiteId>> {
-            match self.msg {
+            match self.op {
                 Op::Insert(_) => None,
                 Op::Delete(s, l) => Some(Dot::new(s, l)),
             }
@@ -190,8 +190,8 @@ mod test {
     fn delete_before_insert() {
         let mut barrier = CausalityBarrier::new(0.into());
 
-        let del = CausalMessage { time: 0, local_id: 1.into(), msg: Op::Delete(1.into(), 1) };
-        let ins = CausalMessage { time: 1, local_id: 1.into(), msg: Op::Insert(0) };
+        let del = CausalMessage { time: 0, local_id: 1.into(), op: Op::Delete(1.into(), 1) };
+        let ins = CausalMessage { time: 1, local_id: 1.into(), op: Op::Insert(0) };
         assert_eq!(barrier.ingest(del), None);
         assert_eq!(barrier.ingest(ins), None);
     }
@@ -200,7 +200,7 @@ mod test {
     fn insert() {
         let mut barrier = CausalityBarrier::new(0.into());
 
-        let ins = CausalMessage { time: 1, local_id: 1.into(), msg: Op::Insert(0) };
+        let ins = CausalMessage { time: 1, local_id: 1.into(), op: Op::Insert(0) };
         assert_eq!(barrier.ingest(ins.clone()), Some(ins.clone()));
     }
 
@@ -208,8 +208,8 @@ mod test {
     fn insert_then_delete () {
         let mut barrier = CausalityBarrier::new(0.into());
 
-        let ins = CausalMessage { time: 0, local_id: 1.into(), msg: Op::Insert(0) };
-        let del = CausalMessage { time: 1, local_id: 1.into(), msg: Op::Delete(1.into(), 1) };
+        let ins = CausalMessage { time: 0, local_id: 1.into(), op: Op::Insert(0) };
+        let del = CausalMessage { time: 1, local_id: 1.into(), op: Op::Delete(1.into(), 1) };
         assert_eq!(barrier.ingest(ins.clone()), Some(ins));
         assert_eq!(barrier.ingest(del.clone()), Some(del));
     }
@@ -218,8 +218,8 @@ mod test {
     fn delete_before_insert_multiple_sites() {
         let mut barrier = CausalityBarrier::new(0.into());
 
-        let del = CausalMessage { time: 0, local_id: 2.into(), msg: Op::Delete(1.into(), 5) };
-        let ins = CausalMessage { time: 5, local_id: 1.into(), msg: Op::Insert(0) };
+        let del = CausalMessage { time: 0, local_id: 2.into(), op: Op::Delete(1.into(), 5) };
+        let ins = CausalMessage { time: 5, local_id: 1.into(), op: Op::Insert(0) };
         assert_eq!(barrier.ingest(del), None);
         assert_eq!(barrier.ingest(ins), None);
     }
