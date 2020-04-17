@@ -15,6 +15,8 @@ use serde::{Deserialize, self, Serialize};
 pub struct CausalityBarrier<A: Actor, T: CausalOp<A>> {
     peers: HashMap<A, VectorEntry>,
     local_id: A,
+    // TODO: this dot here keying the T comes from `T::happens_after()`
+    //       Why do we need to store this,
     pub buffer: HashMap<Dot<A>, T>,
 }
 
@@ -34,16 +36,16 @@ impl VectorEntry {
     }
 
     pub fn increment(&mut self, clk: LogTime) {
-        // We've just found an exception
         if clk < self.max_version {
-            self.exceptions.take(&clk);
+	    // We've resolved an exception
+            self.exceptions.remove(&clk);
         } else if clk == self.max_version {
+	    // This is what we expected to see as the next op
             self.max_version = self.max_version + 1;
         } else {
-            let mut x = self.max_version + 1;
-            while x < clk {
+            // We've just found an exception
+	    for x in (self.max_version + 1)..clk {
                 self.exceptions.insert(x);
-                x = x + 1;
             }
         }
     }
@@ -72,6 +74,7 @@ use crate::dot::Dot;
 
 pub trait CausalOp<A> {
 
+    /// TODO: result should be a VClock<A> since an op could be dependant on a few different msgs
     /// If the result is Some(dot) then this operation cannot occur until the operation that
     /// occured at dot has.
     fn happens_after(&self) -> Option<Dot<A>>;
@@ -114,7 +117,7 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
                 // Ok so we're not causally constrained, but maybe we already saw an associated
                 // causal operation? If so let's just delete the pair
                 match self.buffer.remove(&op.dot()) {
-                    Some(_) => None,
+                    Some(_) => None, // we are dropping the dependent op! that can't be right
                     None => Some(op),
                 }
             }
@@ -129,7 +132,7 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
     }
 
     pub fn expel(&mut self, op: T) -> T {
-        let v = self.peers.entry(op.dot().actor).or_insert_with(VectorEntry::new);
+        let v = self.peers.entry(op.dot().actor).or_default();
         v.increment(op.dot().counter);
         op
     }
