@@ -4,11 +4,12 @@
 // and outputs the full-in-order sequence of messages
 //
 //
-
 #![allow(missing_docs)]
 
 use std::collections::*;
 use serde::{Deserialize, self, Serialize};
+
+use crate::{Actor, Dot};
 
 /// Version Vector with Exceptions
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,7 +26,7 @@ type LogTime = u64;
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct VectorEntry {
     // The version of the next message we'd like to see
-    max_version: LogTime,
+    next_version: LogTime,
     exceptions: HashSet<LogTime>,
 }
 
@@ -36,41 +37,44 @@ impl VectorEntry {
     }
 
     pub fn increment(&mut self, clk: LogTime) {
-        if clk < self.max_version {
+        if clk < self.next_version {
 	    // We've resolved an exception
             self.exceptions.remove(&clk);
-        } else if clk == self.max_version {
+        } else if clk == self.next_version {
 	    // This is what we expected to see as the next op
-            self.max_version = self.max_version + 1;
+            self.next_version = self.next_version + 1;
         } else {
             // We've just found an exception
-	    for x in (self.max_version + 1)..clk {
+	    for x in (self.next_version + 1)..clk {
                 self.exceptions.insert(x);
             }
         }
     }
 
     pub fn is_ready(&self, clk: &LogTime) -> bool {
-        *clk < self.max_version && !self.exceptions.contains(clk)
+        clk < &self.next_version && self.no_exceptions(clk)
     }
 
     /// Calculate the difference between a remote VectorEntry and ours.
     /// Specifically, we want the set of operations we've seen that the remote hasn't
     pub fn diff_from(&self, other: &Self) -> HashSet<LogTime> {
         // 1. Find (new) operations that we've seen locally that the remote hasn't
-        let local_ops = (other.max_version.into()..self.max_version.into()).into_iter().filter(|ix : &u64| {
-            !self.exceptions.contains(&(*ix).into())
-        }).map(LogTime::from);
+        let local_ops = (other.next_version..self.next_version)
+	    .into_iter()
+	    .filter(|ix : &LogTime| self.no_exceptions(ix));
 
         // 2. Find exceptions that we've seen.
-        let mut local_exceptions  = other.exceptions.difference(&self.exceptions).map(|ix| ix.to_owned());
+        let mut local_exceptions  = other.exceptions
+	    .difference(&self.exceptions)
+	    .cloned();
 
         local_ops.chain(&mut local_exceptions).collect()
     }
-}
 
-use crate::Actor;
-use crate::dot::Dot;
+    fn no_exceptions(&self, clk: &LogTime) -> bool {
+	!self.exceptions.contains(clk)
+    }
+}
 
 pub trait CausalOp<A> {
 
@@ -142,7 +146,7 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
         for (site_id, entry) in self.peers.iter() {
             let e_diff = match other.get(site_id) {
                 Some(remote_entry) => entry.diff_from(remote_entry),
-                None => (0..entry.max_version).collect(),
+                None => (0..entry.next_version).collect(),
             };
             ret.insert(site_id.clone(), e_diff);
         }
@@ -230,7 +234,7 @@ mod test {
     #[test]
     fn entry_diff_new_entries() {
         let a = VectorEntry::new();
-        let b = VectorEntry { max_version: 10, exceptions: HashSet::new() };
+        let b = VectorEntry { next_version: 10, exceptions: HashSet::new() };
 
         let c : HashSet<LogTime> = (0..10).into_iter().collect();
         assert_eq!(b.diff_from(&a), c);
@@ -239,8 +243,8 @@ mod test {
 
     #[test]
     fn entry_diff_found_exceptions() {
-        let a = VectorEntry { max_version: 10, exceptions: [1,2,3,4].iter().cloned().collect() };
-        let b = VectorEntry { max_version: 5, exceptions: HashSet::new() };
+        let a = VectorEntry { next_version: 10, exceptions: [1,2,3,4].iter().cloned().collect() };
+        let b = VectorEntry { next_version: 5, exceptions: HashSet::new() };
 
         let c : HashSet<LogTime> = [1,2,3,4].iter().cloned().collect();
         assert_eq!(b.diff_from(&a), c);
@@ -249,9 +253,9 @@ mod test {
     #[test]
     fn entry_diff_complex() {
         // a has seen 0, 5
-        let a = VectorEntry { max_version: 6, exceptions: [1,2,3,4].iter().cloned().collect() };
+        let a = VectorEntry { next_version: 6, exceptions: [1,2,3,4].iter().cloned().collect() };
         // b has seen 0, 1, 5,6,7,8
-        let b = VectorEntry { max_version: 9, exceptions:  [2, 3, 4].iter().cloned().collect() };
+        let b = VectorEntry { next_version: 9, exceptions:  [2, 3, 4].iter().cloned().collect() };
 
         // c should be 1,6,7,8
         let c : HashSet<LogTime> = [1,6,7,8].iter().cloned().collect();
