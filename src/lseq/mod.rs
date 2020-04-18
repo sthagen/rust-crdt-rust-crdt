@@ -6,7 +6,7 @@ use crate::vclock::{Actor, VClock};
 pub use lseq::{LSeq, Op};
 use std::fmt::Display;
 
-impl<V: Ord + Clone + PartialEq + Display + Default, A: Actor + Display> PartialEq for LSeq<V, A> {
+impl<V: Ord + Clone + PartialEq + Display, A: Actor + Display> PartialEq for LSeq<V, A> {
     fn eq(&self, other: &Self) -> bool {
         for (_, (dot, _)) in self.tree.inner() {
             let num_found = other
@@ -40,9 +40,9 @@ impl<V: Ord + Clone + PartialEq + Display + Default, A: Actor + Display> Partial
     }
 }
 
-impl<V: Ord + Clone + Eq + Display + Default, A: Actor + Display> Eq for LSeq<V, A> {}
+impl<V: Ord + Clone + Eq + Display, A: Actor + Display> Eq for LSeq<V, A> {}
 
-impl<V: Ord + Clone + Clone + Display + Default, A: Actor + Display> Causal<A> for LSeq<V, A> {
+impl<V: Ord + Clone + Clone + Display, A: Actor + Display> Causal<A> for LSeq<V, A> {
     fn forget(&mut self, _clock: &VClock<A>) {
         /*self.tree = self
         .tree
@@ -60,7 +60,7 @@ impl<V: Ord + Clone + Clone + Display + Default, A: Actor + Display> Causal<A> f
     }
 }
 
-impl<V: Ord + Clone + Display + Default, A: Actor + Display> CmRDT for LSeq<V, A> {
+impl<V: Ord + Clone + Display, A: Actor + Display> CmRDT for LSeq<V, A> {
     type Op = Op<V, A>;
 
     fn apply(&mut self, op: Self::Op) {

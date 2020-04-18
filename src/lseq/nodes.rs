@@ -62,17 +62,20 @@ impl Identifier {
 }
 
 /// Each node in the tree can be a leaf or contain children
+/// It optionally contains a value, or None if it was deleted
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Atom<V: Ord + Clone, A: Actor> {
-    Node((V, Siblings<V, A>)),
-    Leaf(V),
+    Node((Option<V>, Siblings<V, A>)),
+    Leaf(Option<V>),
 }
 
 impl<V: Ord + Clone + Display, A: Actor + Display> Display for Atom<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self {
-            Atom::Node((v, _)) => write!(f, "Node('{}')", v),
-            Atom::Leaf(v) => write!(f, "Leaf('{}')", v),
+            Atom::Node((Some(v), _)) => write!(f, "Node('{}')", v),
+            Atom::Node((None, _)) => write!(f, "Node()"),
+            Atom::Leaf(Some(v)) => write!(f, "Leaf('{}')", v),
+            Atom::Leaf(None) => write!(f, "Leaf()"),
         }
     }
 }
@@ -83,7 +86,7 @@ type IdNodeMap<V, A> = BTreeMap<u64, (VClock<A>, Atom<V, A>)>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Siblings<V: Ord + Clone, A: Actor>(IdNodeMap<V, A>);
 
-impl<V: Ord + Clone + Display + Default, A: Actor + Display> Siblings<V, A> {
+impl<V: Ord + Clone + Display, A: Actor + Display> Siblings<V, A> {
     /// Create a new and empty set of siblings nodes
     pub fn new() -> Self {
         Self(BTreeMap::default())
@@ -114,7 +117,7 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> Siblings<V, A> {
             match self.0.get(&id.at(0)) {
                 Some(&(ref c, Atom::Node((_, ref siblings)))) => {
                     // found it as a node, we need to clear the value from it
-                    let new_atom = Atom::Node((V::default(), siblings.clone()));
+                    let new_atom = Atom::Node((None, siblings.clone()));
                     self.0.insert(id.at(0), (c.clone(), new_atom));
                 }
                 Some(&(_, Atom::Leaf(_))) => {

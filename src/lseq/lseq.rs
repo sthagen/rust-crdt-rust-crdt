@@ -10,17 +10,33 @@ use std::{
 };
 
 const DEFAULT_STRATEGY_BOUNDARY: u8 = 10;
-const DEFAULT_ROOT_BASE: u8 = 32; // This needs to be greater than boundary, and probably needs to be a power of 2
+const DEFAULT_STRATEGY: Strategy = Strategy::Random;
+const DEFAULT_ROOT_BASE: u64 = 32; // This needs to be greater than boundary, and conveniently needs to be a power of 2
 const BEGIN_ID: u64 = 0;
-const END_ID: u64 = std::u64::MAX;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Strategy {
+    /// Deterministically chooses an stratey for each depth,
+    /// a boundary+ is chosen if depth is even, and boundary- otherwise
+    Alternate,
+    /// Random stratey for each depth
+    /// We may need to allow user to provide a seed if it needs to be deterministic
+    Random,
+    /// Boundary+ for all levels
+    BoundaryPlus,
+    /// Boundary- for all levels
+    BoundaryMinus,
+}
 
 /// An LSeq, a variable-size identifiers class of sequence CRDT
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LSeq<V: Ord + Clone + Display + Default, A: Actor + Display> {
+pub struct LSeq<V: Ord + Clone + Display, A: Actor + Display> {
     /// Boundary for choosing a new number when allocating an identifier
     boundary: u8,
     /// Arity of the root tree node. The arity is doubled at each depth
-    root_arity: u8,
+    root_arity: u64,
+    /// Chosen strategy
+    strategy: Strategy,
     /// When inserting, we have a randomly chosen strategy for
     /// generating the id of the atom at each depth
     strategies: Vec<bool>, // true = boundary+, false = boundary-
@@ -28,9 +44,13 @@ pub struct LSeq<V: Ord + Clone + Display + Default, A: Actor + Display> {
     pub(crate) tree: Siblings<V, A>,
 }
 
-impl<V: Ord + Clone + Display + Default, A: Actor + Display> Default for LSeq<V, A> {
+impl<V: Ord + Clone + Display, A: Actor + Display> Default for LSeq<V, A> {
     fn default() -> Self {
-        Self::new(DEFAULT_STRATEGY_BOUNDARY, DEFAULT_ROOT_BASE)
+        Self::new(
+            DEFAULT_STRATEGY_BOUNDARY,
+            DEFAULT_ROOT_BASE,
+            DEFAULT_STRATEGY,
+        )
     }
 }
 
@@ -58,7 +78,7 @@ pub enum Op<V: Ord + Clone, A: Actor> {
     },
 }
 
-impl<V: Ord + Clone + Display + Default, A: Actor + Display> Display for LSeq<V, A> {
+impl<V: Ord + Clone + Display, A: Actor + Display> Display for LSeq<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "|")?;
         for (i, (ctx, val)) in self.tree.inner().iter().enumerate() {
@@ -72,12 +92,13 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> Display for LSeq<V,
 }
 
 /// Implementation of the core LSeq functionality
-impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
+impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     /// Construct a new empty LSeq with given boundary and root arity settings
-    pub fn new(boundary: u8, root_arity: u8) -> Self {
+    pub fn new(boundary: u8, root_arity: u64, strategy: Strategy) -> Self {
         Self {
             boundary,
             root_arity,
+            strategy,
             strategies: vec![true], // boundary+ strategy for depth 0
             tree: Siblings::new(),
         }
@@ -151,29 +172,26 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
             })
     }
 
-    /// This method chooses randomly a stratey for each depth
-    /// It's not clear if this would work for CRDT when applying operations to different replicas???
-    /// We may need to allow user to provide a seed for the random function which can suffice its use case
-    #[allow(dead_code)]
-    fn get_random_strategy(&mut self, depth: usize) -> bool {
+    fn gen_strategy(&mut self, depth: usize) -> bool {
         if depth >= self.strategies.len() {
             // we need to add a new strategy to our cache
-            let new_strategy = thread_rng().gen_bool(0.5);
+            let new_strategy = match self.strategy {
+                Strategy::Alternate => {
+                    if depth % 2 == 0 {
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Strategy::Random => thread_rng().gen_bool(0.5),
+                Strategy::BoundaryPlus => true,
+                Strategy::BoundaryMinus => false,
+            };
             println!("NEW strategy: {}", new_strategy);
             self.strategies.push(new_strategy);
             new_strategy
         } else {
             self.strategies[depth]
-        }
-    }
-
-    /// This method deterministically chooses an stratey for each depth,
-    /// a boundary+ is chosen if depth is even, and boundary- otherwise
-    fn get_deterministic_strategy(&self, depth: usize) -> bool {
-        if depth % 2 == 0 {
-            true
-        } else {
-            false
         }
     }
 
@@ -195,7 +213,8 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
         value: V,
     ) {
         let p = p.unwrap_or_else(|| Identifier::new(&[BEGIN_ID]));
-        let q = q.unwrap_or_else(|| Identifier::new(&[END_ID]));
+        let mut q = q.unwrap_or_else(|| Identifier::new(&[]));
+        println!("Q END: {:?}", q);
 
         // Let's get the interval between p and q, and also the depth at which
         // we should generate the new identifier
@@ -207,7 +226,7 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
 
         // Define if we should apply a boundary+ or boundary- stratey for the
         // new number, based on the depth where it's being added
-        let depth_strategy = self.get_deterministic_strategy(new_id_depth);
+        let depth_strategy = self.gen_strategy(new_id_depth);
 
         // Depening on the strategy to apply, let's figure which is the new number
         let new_number = self.gen_new_number(new_id_depth, depth_strategy, step, &p, &q);
@@ -217,7 +236,23 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
         for d in 0..new_id_depth {
             // This is not yet the depth where to add the new number,
             // therefore we just check which child is the path of p/q at current's depth
-            let cur_number = if depth_strategy { p.at(d) } else { q.at(d) };
+            let cur_number = if depth_strategy {
+                // if strategy is boundary+ but p is BEGIN at this depth
+                // we then will have to use q path
+                if d < p.len() {
+                    p.at(d)
+                } else {
+                    q.at(d)
+                }
+            } else {
+                // if strategy is boundary- but q is END at this depth
+                // we then will have to use p path
+                if d < q.len() {
+                    q.at(d)
+                } else {
+                    p.at(d)
+                }
+            };
 
             // If there is a 'Leaf' at this depth, or if there is not even an atom,
             // we make sure we have a 'Node' so we can allocate the children afterwards
@@ -252,11 +287,16 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
         if !cur_depth_nodes.contains_key(&new_number) {
             // It seems the slot picked is available, thus we'll use that one
             println!("It's free!!!");
-            let new_atom = Atom::Leaf(value.clone());
+            let new_atom = Atom::Leaf(Some(value.clone()));
             cur_depth_nodes.insert(new_number, (clock.clone(), new_atom));
         } else {
-            // TODO: we should retry find a new number, or merge clocks?
-            panic!("number was already taken!");
+            // TODO: we should probably choose current number as p or q and find a new one
+            // ...or merge clocks?
+            println!(
+                "number {} was already taken at depth {}!",
+                new_number, new_id_depth
+            );
+            return;
         }
 
         println!(
@@ -277,7 +317,7 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
             let arity = self.arity_at(new_id_depth);
 
             println!(
-                "Checking interval at depth {} between {} and {}, arity {}...",
+                "Checking interval at depth {} between {} and {:?}, arity {}...",
                 new_id_depth, p, q, arity
             );
 
@@ -295,7 +335,7 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
                 let i = q.at(new_id_depth);
                 q_position = (q_position << shift) + i;
             } else {
-                q_position = (q_position << shift) + arity - 1;
+                q_position = (q_position << shift) + arity;
             }
 
             // What's the interval between p and q identifiers at current depth?
@@ -375,17 +415,22 @@ impl<V: Ord + Clone + Display + Default, A: Actor + Display> LSeq<V, A> {
             // We first push current node's number to the prefix
             new_prefix.push(*id);
             match atom {
-                Atom::Leaf(value) => seq.push((new_prefix.clone(), value.clone())),
+                Atom::Leaf(Some(value)) => seq.push((new_prefix.clone(), value.clone())),
+                Atom::Leaf(None) => {}
                 Atom::Node((value, s)) => {
                     // Add current item to the sequence before/after processing chldren,
                     // depending on the current level's strategy
                     let chidren_depth = prefix.len() + 1;
-                    if self.get_deterministic_strategy(chidren_depth) {
-                        seq.push((new_prefix.clone(), value.clone()));
+                    if self.strategies[chidren_depth] {
+                        if let Some(v) = value {
+                            seq.push((new_prefix.clone(), v.clone()));
+                        }
                         self.flatten_tree(&s, new_prefix, seq);
                     } else {
                         self.flatten_tree(&s, new_prefix.clone(), seq);
-                        seq.push((new_prefix, value.clone()));
+                        if let Some(v) = value {
+                            seq.push((new_prefix.clone(), v.clone()));
+                        }
                     }
                 }
             }
@@ -398,15 +443,20 @@ mod test {
     use super::*;
 
     // Helper to populate an LSeq with some elements
-    fn populate_seq<V: Ord + Clone + Display + Default, A: Actor + Display>(
+    fn populate_seq<V: Ord + Clone + Display, A: Actor + Display>(
         elems: &[V],
         seq: &mut LSeq<V, A>,
         actor: A,
     ) {
+        let mut reference_id = None;
         for e in elems {
             // Insert e between BEGIN and END
             let add_ctx = seq.read_ctx().derive_add_ctx(actor.clone());
-            seq.apply(seq.insert(e.clone(), None, None, add_ctx.clone()));
+            seq.apply(seq.insert(e.clone(), reference_id, None, add_ctx.clone()));
+
+            let seq = seq.read().val;
+            reference_id = Some(seq[seq.len() - 1].0.clone());
+            println!("SEQ: {}", seq.len());
         }
     }
 
@@ -418,6 +468,7 @@ mod test {
             LSeq {
                 boundary: DEFAULT_STRATEGY_BOUNDARY,
                 root_arity: DEFAULT_ROOT_BASE,
+                strategy: DEFAULT_STRATEGY,
                 strategies: vec![true],
                 tree: Siblings::new()
             }
@@ -425,7 +476,7 @@ mod test {
     }
 
     #[test]
-    fn test_insert() {
+    fn test_simple_insert() {
         let mut seq = LSeq::<char, u64>::default();
         let actor = 100;
 
@@ -489,12 +540,19 @@ mod test {
     #[test]
     #[ignore]
     fn test_insert_new_depth() {
-        let mut seq = LSeq::<char, u64>::default();
+        let mut seq = LSeq::<u64, u64>::new(1, 512, Strategy::BoundaryPlus);
         let actor = 100;
-        populate_seq(&['A', 'B'], &mut seq, actor);
+        let amount = 30000;
+
+        let mut v = Vec::new();
+        for i in 0..amount {
+            v.push(i);
+        }
+
+        populate_seq(&v, &mut seq, actor);
 
         let current_seq = seq.read().val;
-        println!("SEQ: {:?}", current_seq);
+        assert_eq!(current_seq.len(), amount as usize);
     }
 
     #[test]
@@ -691,7 +749,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_insert_p_greater_than_q() {
-        let mut seq = LSeq::<char, u64>::new(2, 2);
+        let mut seq = LSeq::<char, u64>::new(2, 2, Strategy::Alternate);
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
