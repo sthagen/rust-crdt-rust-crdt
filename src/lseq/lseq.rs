@@ -35,10 +35,9 @@ pub struct LSeq<V: Ord + Clone + Display, A: Actor + Display> {
     boundary: u8,
     /// Arity of the root tree node. The arity is doubled at each depth
     root_arity: u64,
-    /// Chosen strategy
+    /// The chosen allocation strategy
     strategy: Strategy,
-    /// When inserting, we have a randomly chosen strategy for
-    /// generating the id of the atom at each depth
+    /// When inserting, we keep a cache of the strategy for each depth
     strategies: Vec<bool>, // true = boundary+, false = boundary-
     /// Depth 1 siblings nodes
     pub(crate) tree: Siblings<V, A>,
@@ -172,6 +171,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             })
     }
 
+    /// Returns the strategy corresponding to given depth and based on chosen by the user
+    /// It also keeps a cache of the strategies for each depth as they are generated
     fn gen_strategy(&mut self, depth: usize) -> bool {
         if depth >= self.strategies.len() {
             // we need to add a new strategy to our cache
@@ -187,7 +188,6 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 Strategy::BoundaryPlus => true,
                 Strategy::BoundaryMinus => false,
             };
-            println!("NEW strategy: {}", new_strategy);
             self.strategies.push(new_strategy);
             new_strategy
         } else {
@@ -214,7 +214,6 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     ) {
         let p = p.unwrap_or_else(|| Identifier::new(&[BEGIN_ID]));
         let mut q = q.unwrap_or_else(|| Identifier::new(&[]));
-        println!("Q END: {:?}", q);
 
         // Let's get the interval between p and q, and also the depth at which
         // we should generate the new identifier
@@ -286,7 +285,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         println!("New number {} for depth {}", new_number, new_id_depth);
         if !cur_depth_nodes.contains_key(&new_number) {
             // It seems the slot picked is available, thus we'll use that one
-            println!("It's free!!!");
+            println!("It's available!!!");
             let new_atom = Atom::Leaf(Some(value.clone()));
             cur_depth_nodes.insert(new_number, (clock.clone(), new_atom));
         } else {
@@ -363,6 +362,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 
     /// Get a new number to insert in either p or q path at a
     /// given depth, and based on the depth's strategy
+    /// TODO: resolve how to handle cases in the edges, e.g. inserting betwen
+    /// last and END, with boundary-, or inserting between BEGIN and first with boundary+
     fn gen_new_number(
         &self,
         depth: usize,
@@ -535,24 +536,6 @@ mod test {
         println!("SEQ [A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 1);
         assert_eq!(current_seq[0].1, 'A');
-    }
-
-    #[test]
-    #[ignore]
-    fn test_insert_new_depth() {
-        let mut seq = LSeq::<u64, u64>::new(1, 512, Strategy::BoundaryPlus);
-        let actor = 100;
-        let amount = 30000;
-
-        let mut v = Vec::new();
-        for i in 0..amount {
-            v.push(i);
-        }
-
-        populate_seq(&v, &mut seq, actor);
-
-        let current_seq = seq.read().val;
-        assert_eq!(current_seq.len(), amount as usize);
     }
 
     #[test]
@@ -744,6 +727,24 @@ mod test {
         let current_seq = seq.read().val;
         println!("FINAL SEQ: {:?}", current_seq);
         assert_eq!(current_seq.len(), 4);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_many_appends() {
+        let mut seq = LSeq::<u64, u64>::new(1, 512, Strategy::BoundaryPlus);
+        let actor = 100;
+        let amount = 30000;
+
+        let mut v = Vec::new();
+        for i in 0..amount {
+            v.push(i);
+        }
+
+        populate_seq(&v, &mut seq, actor);
+
+        let current_seq = seq.read().val;
+        assert_eq!(current_seq.len(), amount as usize);
     }
 
     #[test]

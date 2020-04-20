@@ -1,6 +1,7 @@
 mod lseq;
 mod nodes;
 
+use nodes::Atom;
 use crate::traits::{Causal, CmRDT};
 use crate::vclock::{Actor, VClock};
 pub use lseq::{LSeq, Op};
@@ -43,20 +44,19 @@ impl<V: Ord + Clone + PartialEq + Display, A: Actor + Display> PartialEq for LSe
 impl<V: Ord + Clone + Eq + Display, A: Actor + Display> Eq for LSeq<V, A> {}
 
 impl<V: Ord + Clone + Clone + Display, A: Actor + Display> Causal<A> for LSeq<V, A> {
-    fn forget(&mut self, _clock: &VClock<A>) {
-        /*self.tree = self
-        .tree
-        .clone()
-        .inner().into_iter()
-        .filter_map(|(id, (mut val_clock, val))| {
+    fn forget(&mut self, clock: &VClock<A>) {
+        for (_, (val_clock, atom)) in self.tree.inner_mut().iter_mut() {
             val_clock.forget(&clock);
-            if val_clock.is_empty() {
-                None // remove this value from the register
-            } else {
-                Some((id, (val_clock, val)))
+            if let Atom::Node((_, ref mut siblings)) = atom {
+                // good, keep traversing the tree
+                siblings.forget(clock);
             }
-        })
-        .collect()*/
+        }
+        /*                if val_clock.is_empty() {
+            None // remove this value from the register
+        } else {
+            Some((id, (val_clock, val)))
+        }*/
     }
 }
 
@@ -98,12 +98,12 @@ impl<V: Ord + Clone + Display, A: Actor + Display> CmRDT for LSeq<V, A> {
 
                 println!("\n\nINSERTING {} between {:?} and {:?}", value, p, q);
 
-                // Allocate a new identifier based on p and q
+                // Allocate a new identifier between on p and q
                 self.alloc_id(p, q, clock, value);
             }
             Op::Delete { id, .. } => {
                 println!("\n\nDELETING {}", id);
-                // Delete atom from the tree which contains the given identifier
+                // Delete value from the atom which corresponds to the given identifier
                 self.tree.delete_id(id);
             }
         }
