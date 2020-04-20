@@ -1,6 +1,6 @@
-use super::nodes::{Atom, Identifier, Siblings};
+use super::nodes::{Atom, Identifier, SiblingsNodes};
 use crate::ctx::{AddCtx, ReadCtx, RmCtx};
-use crate::traits::{CmRDT, CvRDT};
+use crate::traits::{Causal, CmRDT, CvRDT};
 use crate::vclock::{Actor, VClock};
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ pub struct LSeq<V: Ord + Clone + Display, A: Actor + Display> {
     /// When inserting, we keep a cache of the strategy for each depth
     strategies: Vec<bool>, // true = boundary+, false = boundary-
     /// Depth 1 siblings nodes
-    pub(crate) tree: Siblings<V, A>,
+    pub(crate) siblings: SiblingsNodes<V, A>,
 }
 
 impl<V: Ord + Clone + Display, A: Actor + Display> Default for LSeq<V, A> {
@@ -80,7 +80,7 @@ pub enum Op<V: Ord + Clone, A: Actor> {
 impl<V: Ord + Clone + Display, A: Actor + Display> Display for LSeq<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "|")?;
-        for (i, (ctx, val)) in self.tree.inner().iter().enumerate() {
+        for (i, (ctx, val)) in self.siblings.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
@@ -99,7 +99,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             root_arity,
             strategy,
             strategies: vec![true], // boundary+ strategy for depth 0
-            tree: Siblings::new(),
+            siblings: SiblingsNodes::default(),
         }
     }
 
@@ -128,7 +128,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     }
 
     /// Generates a read operation to obtain current state of the sequence
-    pub fn read(&self) -> ReadCtx<Vec<(Identifier, V)>, A>
+    pub fn read(&self) -> ReadCtx<Vec<(Identifier, V, VClock<A>)>, A>
     where
         V: Clone,
     {
@@ -154,16 +154,15 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     // Private helpers functions
 
     /// Flatten tree into an ordered sequence of (Identifier, Value)
-    fn flatten(&self) -> Vec<(Identifier, V)> {
+    fn flatten(&self) -> Vec<(Identifier, V, VClock<A>)> {
         let mut seq = vec![];
-        self.flatten_tree(&self.tree, Identifier::new(&[]), &mut seq);
+        self.flatten_tree(&self.siblings, Identifier::new(&[]), &mut seq);
         seq
     }
 
     /// Returns a clock with latest versions of all actors operating on this LSeq
     fn clock(&self) -> VClock<A> {
-        self.tree
-            .inner()
+        self.siblings
             .iter()
             .fold(VClock::new(), |mut accum_clock, (_, (c, _))| {
                 accum_clock.merge(c.clone());
@@ -213,7 +212,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         value: V,
     ) {
         let p = p.unwrap_or_else(|| Identifier::new(&[BEGIN_ID]));
-        let mut q = q.unwrap_or_else(|| Identifier::new(&[]));
+        let q = q.unwrap_or_else(|| Identifier::new(&[]));
 
         // Let's get the interval between p and q, and also the depth at which
         // we should generate the new identifier
@@ -231,7 +230,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         let new_number = self.gen_new_number(new_id_depth, depth_strategy, step, &p, &q);
 
         // Let's now attempt to insert the new identifier in the tree at new_id_depth
-        let mut cur_depth_nodes = self.tree.inner_mut();
+        let mut cur_depth_nodes = &mut self.siblings;
         for d in 0..new_id_depth {
             // This is not yet the depth where to add the new number,
             // therefore we just check which child is the path of p/q at current's depth
@@ -258,7 +257,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             match cur_depth_nodes.get(&cur_number) {
                 Some(&(ref c, Atom::Leaf(ref v))) => {
                     // convert it into a 'Node' maintaining its value and clock info
-                    let children = Siblings::new();
+                    let children = SiblingsNodes::new();
                     let new_atom = Atom::Node((v.clone(), children));
                     cur_depth_nodes.insert(cur_number, (c.clone(), new_atom));
                 }
@@ -270,10 +269,10 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             }
 
             // Now we can just step into the next depth of siblings to keep traversing the tree
-            if let Some(&mut (_, Atom::Node((_, ref mut siblings)))) =
+            if let Some(&mut (_, Atom::Node((_, ref mut inner_siblings)))) =
                 cur_depth_nodes.get_mut(&cur_number)
             {
-                cur_depth_nodes = siblings.inner_mut();
+                cur_depth_nodes = inner_siblings;
             } else {
                 // TODO: handle it properly, this should never happen
                 panic!("unexpected!!!");
@@ -283,19 +282,28 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         // 'cur_depth_nodes' should now be referencing the siblings
         // where we need to insert the new number
         println!("New number {} for depth {}", new_number, new_id_depth);
-        if !cur_depth_nodes.contains_key(&new_number) {
-            // It seems the slot picked is available, thus we'll use that one
-            println!("It's available!!!");
-            let new_atom = Atom::Leaf(Some(value.clone()));
-            cur_depth_nodes.insert(new_number, (clock.clone(), new_atom));
-        } else {
-            // TODO: we should probably choose current number as p or q and find a new one
-            // ...or merge clocks?
-            println!(
-                "number {} was already taken at depth {}!",
-                new_number, new_id_depth
-            );
-            return;
+        println!("INCOMING CLOCK: {}", clock);
+        match cur_depth_nodes.get_mut(&new_number) {
+            Some(&mut (ref mut c, Atom::Node(_))) | Some(&mut (ref mut c, Atom::Leaf(_))) => {
+                // TODO: presumable concurrent operations, we may need to keep both with
+                // some deterministic order, e.g. actor ...?...
+                println!(
+                    "Number {} already existing at depth {}",
+                    new_number, new_id_depth
+                );
+                println!("CURRENT CLOCK: {}", *c);
+                //if *c < clock {
+                println!("Op's clock is newer, we apply the clock to current atom's clock");
+                (*c).forget(&clock);
+                (*c).merge(clock);
+                //}
+            }
+            None => {
+                // It seems the slot picked is available, thus we'll use that one
+                println!("It's a brand new identifier!");
+                let new_atom = Atom::Leaf(Some(value.clone()));
+                cur_depth_nodes.insert(new_number, (clock.clone(), new_atom));
+            }
         }
 
         println!(
@@ -403,34 +411,88 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         }
     }
 
+    /// Forget given clock in each of the atoms' clock
+    pub(crate) fn forget_clock(&mut self, clock: &VClock<A>) {
+        LSeq::forget_clock_in_tree(&mut self.siblings, clock);
+    }
+
+    /// Recursivelly forget the given clock in each of the atoms' clock
+    fn forget_clock_in_tree(siblings: &mut SiblingsNodes<V, A>, clock: &VClock<A>) {
+        siblings.iter_mut().for_each(|s| match s {
+            (_, (val_clock, Atom::Node((_, ref mut inner_siblings)))) => {
+                val_clock.forget(clock);
+                LSeq::forget_clock_in_tree(inner_siblings, clock);
+            }
+            (_, (val_clock, Atom::Leaf(_))) => {
+                val_clock.forget(clock);
+            }
+        });
+    }
+
+    /// Find the atom in the tree following the path of the given identifier and delete its value
+    pub(crate) fn delete_id(&mut self, mut id: Identifier) {
+        let mut cur_depth_nodes = &mut self.siblings;
+        let id_depth = id.len();
+        for _ in 0..id_depth - 1 {
+            let cur_number = id.remove(0);
+            match cur_depth_nodes.get_mut(&cur_number) {
+                Some(&mut (_, Atom::Node((_, ref mut inner_siblings)))) => {
+                    cur_depth_nodes = inner_siblings;
+                }
+                _ => {
+                    // atom not found with given identifier
+                    return;
+                }
+            }
+        }
+
+        if id.len() == 1 {
+            match cur_depth_nodes.get(&id.at(0)) {
+                Some(&(ref c, Atom::Node((_, ref inner_siblings)))) => {
+                    // found it as a node, we need to clear the value from it
+                    let new_atom = Atom::Node((None, inner_siblings.clone()));
+                    cur_depth_nodes.insert(id.at(0), (c.clone(), new_atom));
+                }
+                Some(&(ref c, Atom::Leaf(_))) => {
+                    // found it as a leaf, we need to clear the value from it
+                    let new_atom = Atom::Leaf(None);
+                    cur_depth_nodes.insert(id.at(0), (c.clone(), new_atom));
+                }
+                None => { /* atom not found */ }
+            }
+        }
+    }
+
     /// Recursivelly flattens the tree formed by the given siblings nodes
     /// The prefix is used for generating each Identifier in the sequence
     fn flatten_tree(
         &self,
-        siblings: &Siblings<V, A>,
+        siblings: &SiblingsNodes<V, A>,
         prefix: Identifier,
-        seq: &mut Vec<(Identifier, V)>,
+        seq: &mut Vec<(Identifier, V, VClock<A>)>,
     ) {
-        for (id, (_, atom)) in siblings.inner() {
+        for (id, (actor, atom)) in siblings {
             let mut new_prefix = prefix.clone();
             // We first push current node's number to the prefix
             new_prefix.push(*id);
             match atom {
-                Atom::Leaf(Some(value)) => seq.push((new_prefix.clone(), value.clone())),
+                Atom::Leaf(Some(value)) => {
+                    seq.push((new_prefix.clone(), value.clone(), actor.clone()))
+                }
                 Atom::Leaf(None) => {}
-                Atom::Node((value, s)) => {
+                Atom::Node((value, inner_siblings)) => {
                     // Add current item to the sequence before/after processing chldren,
                     // depending on the current level's strategy
                     let chidren_depth = prefix.len() + 1;
                     if self.strategies[chidren_depth] {
                         if let Some(v) = value {
-                            seq.push((new_prefix.clone(), v.clone()));
+                            seq.push((new_prefix.clone(), v.clone(), actor.clone()));
                         }
-                        self.flatten_tree(&s, new_prefix, seq);
+                        self.flatten_tree(&inner_siblings, new_prefix, seq);
                     } else {
-                        self.flatten_tree(&s, new_prefix.clone(), seq);
+                        self.flatten_tree(&inner_siblings, new_prefix.clone(), seq);
                         if let Some(v) = value {
-                            seq.push((new_prefix.clone(), v.clone()));
+                            seq.push((new_prefix.clone(), v.clone(), actor.clone()));
                         }
                     }
                 }
@@ -471,7 +533,7 @@ mod test {
                 root_arity: DEFAULT_ROOT_BASE,
                 strategy: DEFAULT_STRATEGY,
                 strategies: vec![true],
-                tree: Siblings::new()
+                siblings: SiblingsNodes::default()
             }
         );
     }
@@ -492,7 +554,7 @@ mod test {
 
         // Insert B to [A] (between A and END)
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
         seq.apply(seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone()));
 
         let current_seq = seq.read().val;
@@ -518,7 +580,7 @@ mod test {
 
         // Insert B to [A] (between A and END)
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
         seq.apply(seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone()));
 
         let current_seq = seq.read().val;
@@ -529,7 +591,7 @@ mod test {
 
         // Delete B from [A, B]
         let rm_ctx = seq.read_ctx().derive_rm_ctx();
-        let (id_of_b, _) = &current_seq[1];
+        let (id_of_b, _, _) = &current_seq[1];
         seq.apply(seq.delete(id_of_b.clone(), rm_ctx.clone()));
 
         let current_seq = seq.read().val;
@@ -561,7 +623,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('B', None, Some(id_of_a.clone()), add_ctx.clone());
@@ -571,8 +633,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _) = &current_seq[0];
-        let (id_of_a, _) = &current_seq[1];
+        let (id_of_b, _, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[1];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -587,8 +649,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, C, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _) = &current_seq[1];
-        let (id_of_a, _) = &current_seq[2];
+        let (id_of_c, _, _) = &current_seq[1];
+        let (id_of_a, _, _) = &current_seq[2];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -603,8 +665,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, C, D, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 4);
-        let (id_of_b, _) = &current_seq[0];
-        let (id_of_c, _) = &current_seq[1];
+        let (id_of_b, _, _) = &current_seq[0];
+        let (id_of_c, _, _) = &current_seq[1];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -619,8 +681,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, E, C, D, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 5);
-        let (id_of_d, _) = &current_seq[3];
-        let (id_of_a, _) = &current_seq[4];
+        let (id_of_d, _, _) = &current_seq[3];
+        let (id_of_a, _, _) = &current_seq[4];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -651,7 +713,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone());
@@ -661,7 +723,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A, B]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _) = &current_seq[1];
+        let (id_of_b, _, _) = &current_seq[1];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('C', Some(id_of_b.clone()), None, add_ctx.clone());
@@ -671,7 +733,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A, B, C]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _) = &current_seq[2];
+        let (id_of_c, _, _) = &current_seq[2];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('D', Some(id_of_c.clone()), None, add_ctx.clone());
@@ -697,7 +759,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('B', None, Some(id_of_a.clone()), add_ctx.clone());
@@ -707,7 +769,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _) = &current_seq[0];
+        let (id_of_b, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('C', None, Some(id_of_b.clone()), add_ctx.clone());
@@ -717,7 +779,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [C, B, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _) = &current_seq[0];
+        let (id_of_c, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('D', None, Some(id_of_c.clone()), add_ctx.clone());
@@ -762,7 +824,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone());
@@ -772,8 +834,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A, B]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 3);
-        let (id_of_a, _) = &current_seq[0];
-        let (id_of_b, _) = &current_seq[1];
+        let (id_of_a, _, _) = &current_seq[0];
+        let (id_of_b, _, _) = &current_seq[1];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -823,7 +885,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[0];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('B', None, Some(id_of_a.clone()), add_ctx.clone());
@@ -833,8 +895,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _) = &current_seq[0];
-        let (id_of_a, _) = &current_seq[1];
+        let (id_of_b, _, _) = &current_seq[0];
+        let (id_of_a, _, _) = &current_seq[1];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -849,8 +911,8 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, C, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _) = &current_seq[1];
-        let (id_of_a, _) = &current_seq[2];
+        let (id_of_c, _, _) = &current_seq[1];
+        let (id_of_a, _, _) = &current_seq[2];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert(
@@ -865,7 +927,7 @@ mod test {
         let current_seq = seq.read().val;
         println!("SEQ [B, C, D, A]: {:?}", current_seq);
         assert_eq!(current_seq.len(), 4);
-        let (id_of_d, _) = &current_seq[2];
+        let (id_of_d, _, _) = &current_seq[2];
 
         let add_ctx = seq.read_ctx().derive_add_ctx(actor);
         let op = seq.insert('E', None, Some(id_of_d.clone()), add_ctx.clone());
@@ -875,5 +937,39 @@ mod test {
         let current_seq = seq.read().val;
         println!("FINAL SEQ: {:?}", current_seq);
         assert_eq!(current_seq.len(), 5);
+    }
+
+    #[test]
+    fn test_insert_two_actors() {
+        let mut seq = LSeq::<char, u64>::new(2, 4, Strategy::BoundaryPlus);
+        let actor1 = 100;
+        let actor2 = 200;
+
+        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
+        let add_ctx2 = seq.read_ctx().derive_add_ctx(actor2);
+
+        // actor1 appends A to [] (between BEGIN and END)
+        let op_actor1 = seq.insert('A', None, None, add_ctx1.clone());
+
+        // actor2 appends B to [] (between BEGIN and END)
+        let op_actor2 = seq.insert('B', None, None, add_ctx2.clone());
+
+        seq.apply(op_actor1);
+        let current_seq = seq.read().val;
+        println!("CURR SEQ: {:?}", current_seq);
+
+        seq.apply(op_actor2);
+        let current_seq = seq.read().val;
+        println!("CURR SEQ: {:?}", current_seq);
+
+        // actor1 appends B to [A, B]/[B, A] (between BEGIN and END)
+        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
+        let op_actor1 = seq.insert('B', None, None, add_ctx1.clone());
+        seq.apply(op_actor1);
+
+        // Test final length
+        let current_seq = seq.read().val;
+        println!("FINAL SEQ: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 2);
     }
 }
