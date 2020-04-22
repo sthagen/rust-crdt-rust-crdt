@@ -49,7 +49,7 @@ pub mod ctx;
 pub use crate::{
     gcounter::GCounter,
     gset::GSet,
-    lseq::LSeq,
+    lseq::{LSeq, LSeqStrategy},
     lwwreg::LWWReg,
     map::Map,
     mvreg::MVReg,

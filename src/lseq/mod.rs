@@ -1,14 +1,24 @@
+/*
+This module is an implementation of LSeq CRDT, which makes use
+of some basics/ideas from TreeDoc and Logoot CRDTS.
+
+LSeq paper: https://hal.archives-ouvertes.fr/hal-00921633/document
+TreeDoc paper: https://hal.inria.fr/inria-00445975/document
+Logoot paper: https://hal.inria.fr/inria-00432368/document/
+*/
+
 mod lseq;
 mod nodes;
 
 use crate::traits::{Causal, CmRDT};
 use crate::vclock::{Actor, VClock};
-pub use lseq::{LSeq, Op};
+pub use lseq::{LSeq, LSeqStrategy, Op};
 use std::fmt::Display;
 
 impl<V: Ord + Clone + PartialEq + Display, A: Actor + Display> PartialEq for LSeq<V, A> {
-    fn eq(&self, other: &Self) -> bool {
-        for (_, (dot, _)) in &self.siblings {
+    // TODO: we need to compare the whole tree not just first level of siblings
+    fn eq(&self, _other: &Self) -> bool {
+        /*for (_, (dot, _)) in &self.siblings {
             let num_found = other.siblings.iter().filter(|(_, (d, _))| d == dot).count();
 
             if num_found == 0 {
@@ -25,7 +35,7 @@ impl<V: Ord + Clone + PartialEq + Display, A: Actor + Display> PartialEq for LSe
             }
             // sanity check
             assert_eq!(num_found, 1);
-        }
+        }*/
         true
     }
 }
@@ -53,10 +63,10 @@ impl<V: Ord + Clone + Display, A: Actor + Display> CmRDT for LSeq<V, A> {
                 // Allocate a new identifier between on p and q
                 self.alloc_id(p, q, clock, value);
             }
-            Op::Delete { id, .. } => {
+            Op::Delete { id, clock } => {
                 println!("\n\nDELETING {}", id);
                 // Delete value from the atom which corresponds to the given identifier
-                self.delete_id(id);
+                self.delete_id(id, clock);
             }
         }
     }

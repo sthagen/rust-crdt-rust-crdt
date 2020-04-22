@@ -1,21 +1,23 @@
-use super::nodes::{Atom, Identifier, SiblingsNodes};
+use super::nodes::{Atom, AtomValue, Identifier, MiniNodes, SiblingsNodes};
 use crate::ctx::{AddCtx, ReadCtx, RmCtx};
 use crate::traits::{Causal, CmRDT, CvRDT};
 use crate::vclock::{Actor, VClock};
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp,
+    cmp::{self, Ordering},
     fmt::{self, Display},
 };
 
 const DEFAULT_STRATEGY_BOUNDARY: u8 = 10;
-const DEFAULT_STRATEGY: Strategy = Strategy::Random;
+const DEFAULT_STRATEGY: LSeqStrategy = LSeqStrategy::Random;
 const DEFAULT_ROOT_BASE: u64 = 32; // This needs to be greater than boundary, and conveniently needs to be a power of 2
 const BEGIN_ID: u64 = 0;
 
+/// Strategy to be used when allocating a new identifier, which determines if new
+/// id must be created under p or q
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Strategy {
+pub enum LSeqStrategy {
     /// Deterministically chooses an stratey for each depth,
     /// a boundary+ is chosen if depth is even, and boundary- otherwise
     Alternate,
@@ -36,11 +38,13 @@ pub struct LSeq<V: Ord + Clone + Display, A: Actor + Display> {
     /// Arity of the root tree node. The arity is doubled at each depth
     root_arity: u64,
     /// The chosen allocation strategy
-    strategy: Strategy,
+    strategy: LSeqStrategy,
     /// When inserting, we keep a cache of the strategy for each depth
     strategies: Vec<bool>, // true = boundary+, false = boundary-
     /// Depth 1 siblings nodes
     pub(crate) siblings: SiblingsNodes<V, A>,
+    /// Clock with latest versions of all actors operating on this LSeq
+    clock: VClock<A>,
 }
 
 impl<V: Ord + Clone + Display, A: Actor + Display> Default for LSeq<V, A> {
@@ -80,11 +84,11 @@ pub enum Op<V: Ord + Clone, A: Actor> {
 impl<V: Ord + Clone + Display, A: Actor + Display> Display for LSeq<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "|")?;
-        for (i, (ctx, val)) in self.siblings.iter().enumerate() {
+        for (i, (id, val)) in self.siblings.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{} {}@{:?}", val.1, i, ctx)?;
+            write!(f, "{}@{}", val, id)?;
         }
         write!(f, "|")
     }
@@ -93,13 +97,14 @@ impl<V: Ord + Clone + Display, A: Actor + Display> Display for LSeq<V, A> {
 /// Implementation of the core LSeq functionality
 impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     /// Construct a new empty LSeq with given boundary and root arity settings
-    pub fn new(boundary: u8, root_arity: u64, strategy: Strategy) -> Self {
+    pub fn new(boundary: u8, root_arity: u64, strategy: LSeqStrategy) -> Self {
         Self {
             boundary,
             root_arity,
             strategy,
             strategies: vec![true], // boundary+ strategy for depth 0
             siblings: SiblingsNodes::default(),
+            clock: VClock::default(),
         }
     }
 
@@ -132,21 +137,19 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     where
         V: Clone,
     {
-        let clock = self.clock();
         let sequence = self.flatten();
         ReadCtx {
-            add_clock: clock.clone(),
-            rm_clock: clock,
+            add_clock: self.clock.clone(),
+            rm_clock: self.clock.clone(),
             val: sequence,
         }
     }
 
     /// Retrieve the current read context
     pub fn read_ctx(&self) -> ReadCtx<(), A> {
-        let clock = self.clock();
         ReadCtx {
-            add_clock: clock.clone(),
-            rm_clock: clock,
+            add_clock: self.clock.clone(),
+            rm_clock: self.clock.clone(),
             val: (),
         }
     }
@@ -160,14 +163,10 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         seq
     }
 
-    /// Returns a clock with latest versions of all actors operating on this LSeq
-    fn clock(&self) -> VClock<A> {
-        self.siblings
-            .iter()
-            .fold(VClock::new(), |mut accum_clock, (_, (c, _))| {
-                accum_clock.merge(c.clone());
-                accum_clock
-            })
+    /// Merge a clock into this LSeq global clock which keeps latest versions
+    /// of all actors operating on this LSeq
+    fn merge_clock(&mut self, clock: VClock<A>) {
+        self.clock.merge(clock);
     }
 
     /// Returns the strategy corresponding to given depth and based on chosen by the user
@@ -176,16 +175,16 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         if depth >= self.strategies.len() {
             // we need to add a new strategy to our cache
             let new_strategy = match self.strategy {
-                Strategy::Alternate => {
+                LSeqStrategy::Alternate => {
                     if depth % 2 == 0 {
                         true
                     } else {
                         false
                     }
                 }
-                Strategy::Random => thread_rng().gen_bool(0.5),
-                Strategy::BoundaryPlus => true,
-                Strategy::BoundaryMinus => false,
+                LSeqStrategy::Random => thread_rng().gen_bool(0.5),
+                LSeqStrategy::BoundaryPlus => true,
+                LSeqStrategy::BoundaryMinus => false,
             };
             self.strategies.push(new_strategy);
             new_strategy
@@ -230,86 +229,97 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         let new_number = self.gen_new_number(new_id_depth, depth_strategy, step, &p, &q);
 
         // Let's now attempt to insert the new identifier in the tree at new_id_depth
-        let mut cur_depth_nodes = &mut self.siblings;
-        for d in 0..new_id_depth {
-            // This is not yet the depth where to add the new number,
-            // therefore we just check which child is the path of p/q at current's depth
-            let cur_number = if depth_strategy {
-                // if strategy is boundary+ but p is BEGIN at this depth
-                // we then will have to use q path
-                if d < p.len() {
-                    p.at(d)
-                } else {
-                    q.at(d)
-                }
-            } else {
-                // if strategy is boundary- but q is END at this depth
-                // we then will have to use p path
-                if d < q.len() {
-                    q.at(d)
-                } else {
-                    p.at(d)
-                }
+        let siblings_for_insert = self.find_siblings_in_tree(new_id_depth, &p, &q, depth_strategy);
+
+        // create new level if that's needed
+        /*if cur_depth_nodes.get(&new_number).is_none() {
+            println!("Create a new level");
+            let children = SiblingsNodes::new();
+            let atom_value = AtomValue {
+                clock: VClock::default(),
+                value: None,
             };
-
-            // If there is a 'Leaf' at this depth, or if there is not even an atom,
-            // we make sure we have a 'Node' so we can allocate the children afterwards
-            match cur_depth_nodes.get(&cur_number) {
-                Some(&(ref c, Atom::Leaf(ref v))) => {
-                    // convert it into a 'Node' maintaining its value and clock info
-                    let children = SiblingsNodes::new();
-                    let new_atom = Atom::Node((v.clone(), children));
-                    cur_depth_nodes.insert(cur_number, (c.clone(), new_atom));
-                }
-                Some(&(_, Atom::Node(_))) => { /* there is a Node already so we are good */ }
-                None => {
-                    // TODO: handle it properly and discover if it's a valid case
-                    panic!("Do we need to create not only 1 new level but more???");
-                }
-            }
-
-            // Now we can just step into the next depth of siblings to keep traversing the tree
-            if let Some(&mut (_, Atom::Node((_, ref mut inner_siblings)))) =
-                cur_depth_nodes.get_mut(&cur_number)
-            {
-                cur_depth_nodes = inner_siblings;
-            } else {
-                // TODO: handle it properly, this should never happen
-                panic!("unexpected!!!");
-            }
-        }
+            let new_atom = Atom::Node((atom_value, children));
+            cur_depth_nodes.insert(new_number, new_atom);
+        }*/
 
         // 'cur_depth_nodes' should now be referencing the siblings
         // where we need to insert the new number
         println!("New number {} for depth {}", new_number, new_id_depth);
         println!("INCOMING CLOCK: {}", clock);
-        match cur_depth_nodes.get_mut(&new_number) {
-            Some(&mut (ref mut c, Atom::Node(_))) | Some(&mut (ref mut c, Atom::Leaf(_))) => {
-                // TODO: presumable concurrent operations, we may need to keep both with
-                // some deterministic order, e.g. actor ...?...
+        match siblings_for_insert.get_mut(&new_number) {
+            Some(Atom::Node((cur_atom_value, _inner_siblings))) => {
                 println!(
                     "Number {} already existing at depth {}",
                     new_number, new_id_depth
                 );
-                println!("CURRENT CLOCK: {}", *c);
-                //if *c < clock {
-                println!("Op's clock is newer, we apply the clock to current atom's clock");
-                (*c).forget(&clock);
-                (*c).merge(clock);
-                //}
+                println!("CURRENT CLOCK: {}", cur_atom_value.clock);
+                println!(
+                    "CLOCKS Comparison: {:?}",
+                    cur_atom_value.clock.partial_cmp(&clock)
+                );
+
+                match (cur_atom_value.clock).partial_cmp(&clock) {
+                    Some(Ordering::Less) => {
+                        println!("Op's clock is newer, we don't allow this operation, cannot mutate a value TODO");
+                        // TODO: perhaps find a new number to insert as it seems to be a brand new insert
+                    }
+                    None => {
+                        println!("Concurrent operations!");
+                        // Concurrent operations, we keep values a within mini nodes
+                        // using the VClock<A> as the disambiguator
+
+                        // Let's convert current Node into a MiniNodes to keep both values
+                        // Insert both values in the mini_nodes
+                        let mut mini_nodes = MiniNodes::default();
+                        let new_atom_value = AtomValue {
+                            clock: clock.clone(),
+                            value: Some(value.clone()),
+                        };
+                        // TODO: we need to use something like the Actor to order mini-nodes deterministically
+                        // but at the moment we don't have info of which actor/site sent this request
+                        mini_nodes.insert(1, new_atom_value);
+                        mini_nodes.insert(2, cur_atom_value.clone());
+
+                        let new_atom = Atom::MiniNodes(mini_nodes); // TODO insert with inner_siblings
+                        siblings_for_insert.insert(new_number, new_atom);
+
+                        // Merge clock into the LSeq's main clock
+                        self.merge_clock(clock);
+                    }
+                    _ => {
+                        // it's either Greater or Equal,
+                        // ignore it, we've already seen this operation
+                    }
+                }
+            }
+            Some(Atom::MiniNodes(_)) => {
+                // TODO: depending on the clock, we may need to find a new number rather than
+                // assume it's an insert between mini-nodes.
+
+                // We don't support inserting between mini nodes
+                println!("We don't support inserting between mini nodes");
             }
             None => {
                 // It seems the slot picked is available, thus we'll use that one
                 println!("It's a brand new identifier!");
-                let new_atom = Atom::Leaf(Some(value.clone()));
-                cur_depth_nodes.insert(new_number, (clock.clone(), new_atom));
+                let children = SiblingsNodes::new();
+                let atom_value = AtomValue {
+                    clock: clock.clone(),
+                    value: Some(value.clone()),
+                };
+                let new_atom = Atom::Node((atom_value, children));
+                siblings_for_insert.insert(new_number, new_atom);
+
+                // Merge clock into the LSeq's main clock
+                self.merge_clock(clock);
+
+                println!(
+                    "New number {} allocated at depth {}",
+                    new_number, new_id_depth
+                );
             }
         }
-
-        println!(
-            "New number {} allocated at depth {}",
-            new_number, new_id_depth
-        );
     }
 
     // Finds out what's the interval between p and q (reagrdless of their length/height),
@@ -391,8 +401,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             };
 
             // TODO: we may need a seed provided by the user to we get a deterministic result
-            let n = thread_rng().gen_range(reference_num + 1, reference_num + step + 1);
-            //let n = reference_num + (step / 2) + 1;
+            //let n = thread_rng().gen_range(reference_num + 1, reference_num + step + 1);
+            let n = reference_num + (step / 2) + 1;
             println!("STEP boundary+ (step {}): {}", step, n);
             n
         } else {
@@ -404,39 +414,97 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             };
 
             // TODO: we may need a seed provided by the user to we get a deterministic result
-            let n = thread_rng().gen_range(reference_num - step, reference_num);
-            //let n = reference_num - (step / 2) - 1;
+            //let n = thread_rng().gen_range(reference_num - step, reference_num);
+            let n = reference_num - (step / 2) - 1;
             println!("STEP boundary- (step {}): {}", step, n);
             n
         }
     }
 
+    /// Find siblings in the tree at the level/depth where new number shall be inserted
+    fn find_siblings_in_tree(
+        &mut self,
+        depth: usize,
+        p: &Identifier,
+        q: &Identifier,
+        strategy: bool,
+    ) -> &mut SiblingsNodes<V, A> {
+        // Let's now attempt to insert the new identifier in the tree at new_id_depth
+        let mut cur_depth_nodes = &mut self.siblings;
+        for d in 0..depth {
+            // This is not yet the depth where to add the new number,
+            // therefore we just check which child is the path of p/q at current's depth
+            let cur_number = if strategy {
+                // if strategy is boundary+ but p is BEGIN at this depth
+                // we then will have to use q path
+                if d < p.len() {
+                    p.at(d)
+                } else {
+                    // TODO: this fallback doesn't work, we may need to create mini-nodes
+                    q.at(d)
+                }
+            } else {
+                // if strategy is boundary- but q is END at this depth
+                // we then will have to use p path
+                if d < q.len() {
+                    q.at(d)
+                } else {
+                    // TODO: this fallback doesn't work, we may need to create mini-nodes
+                    p.at(d)
+                }
+            };
+
+            // Now we can just step into the next depth of siblings to keep traversing the tree
+            match cur_depth_nodes.get_mut(&cur_number) {
+                Some(Atom::Node((_, ref mut inner_siblings))) => {
+                    cur_depth_nodes = inner_siblings;
+                }
+                _ => {
+                    //if d < depth - 1 {
+                    // TODO: what if we didn't go through the complete identifier?
+                    // do we have to create more than one new level? it shouldn't ever happen
+                    panic!("Unexpected, it seems we need to create more than one new level?");
+                    //}
+                }
+            }
+        }
+
+        cur_depth_nodes
+    }
+
     /// Forget given clock in each of the atoms' clock
     pub(crate) fn forget_clock(&mut self, clock: &VClock<A>) {
+        // forget it from global clock maintained in the LSeq instance
+        self.clock.forget(clock);
+
+        // now forget it in each atom in the tree
         LSeq::forget_clock_in_tree(&mut self.siblings, clock);
     }
 
     /// Recursivelly forget the given clock in each of the atoms' clock
-    fn forget_clock_in_tree(siblings: &mut SiblingsNodes<V, A>, clock: &VClock<A>) {
+    fn forget_clock_in_tree(siblings: &mut SiblingsNodes<V, A>, c: &VClock<A>) {
         siblings.iter_mut().for_each(|s| match s {
-            (_, (val_clock, Atom::Node((_, ref mut inner_siblings)))) => {
-                val_clock.forget(clock);
-                LSeq::forget_clock_in_tree(inner_siblings, clock);
+            (_, Atom::Node((AtomValue { ref mut clock, .. }, ref mut inner_siblings))) => {
+                clock.forget(c);
+                LSeq::forget_clock_in_tree(inner_siblings, c);
             }
-            (_, (val_clock, Atom::Leaf(_))) => {
-                val_clock.forget(clock);
+            (_, Atom::MiniNodes(ref mut mini_nodes)) => {
+                mini_nodes.iter_mut().for_each(|(_, ref mut atom_value)| {
+                    atom_value.clock.forget(c);
+                    //LSeq::forget_clock_in_tree(inner_siblings, c);
+                })
             }
         });
     }
 
     /// Find the atom in the tree following the path of the given identifier and delete its value
-    pub(crate) fn delete_id(&mut self, mut id: Identifier) {
+    pub(crate) fn delete_id(&mut self, mut id: Identifier, clock: VClock<A>) {
         let mut cur_depth_nodes = &mut self.siblings;
         let id_depth = id.len();
         for _ in 0..id_depth - 1 {
             let cur_number = id.remove(0);
             match cur_depth_nodes.get_mut(&cur_number) {
-                Some(&mut (_, Atom::Node((_, ref mut inner_siblings)))) => {
+                Some(Atom::Node((_, ref mut inner_siblings))) => {
                     cur_depth_nodes = inner_siblings;
                 }
                 _ => {
@@ -448,15 +516,24 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 
         if id.len() == 1 {
             match cur_depth_nodes.get(&id.at(0)) {
-                Some(&(ref c, Atom::Node((_, ref inner_siblings)))) => {
+                Some(Atom::Node((_, ref inner_siblings))) => {
                     // found it as a node, we need to clear the value from it
-                    let new_atom = Atom::Node((None, inner_siblings.clone()));
-                    cur_depth_nodes.insert(id.at(0), (c.clone(), new_atom));
+                    let new_atom = Atom::Node((
+                        AtomValue {
+                            clock: clock.clone(),
+                            value: None,
+                        },
+                        inner_siblings.clone(),
+                    ));
+                    cur_depth_nodes.insert(id.at(0), new_atom);
+                    self.merge_clock(clock);
                 }
-                Some(&(ref c, Atom::Leaf(_))) => {
-                    // found it as a leaf, we need to clear the value from it
-                    let new_atom = Atom::Leaf(None);
-                    cur_depth_nodes.insert(id.at(0), (c.clone(), new_atom));
+                Some(Atom::MiniNodes(_mini_nodes)) => {
+                    // found it as a mini node, we need to clear
+                    // the value from the corresponding mini node
+                    // TODO
+                    //cur_depth_nodes.insert(id.at(0), new_atom);
+                    self.merge_clock(clock);
                 }
                 None => { /* atom not found */ }
             }
@@ -471,32 +548,54 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         prefix: Identifier,
         seq: &mut Vec<(Identifier, V, VClock<A>)>,
     ) {
-        for (id, (actor, atom)) in siblings {
-            let mut new_prefix = prefix.clone();
+        for (id, atom) in siblings {
             // We first push current node's number to the prefix
+            let mut new_prefix = prefix.clone();
             new_prefix.push(*id);
+
             match atom {
-                Atom::Leaf(Some(value)) => {
-                    seq.push((new_prefix.clone(), value.clone(), actor.clone()))
+                Atom::Node((atom_value, inner_siblings)) if inner_siblings.is_empty() => {
+                    if let Some(v) = &atom_value.value {
+                        seq.push((new_prefix.clone(), v.clone(), atom_value.clock.clone()));
+                    }
                 }
-                Atom::Leaf(None) => {}
-                Atom::Node((value, inner_siblings)) => {
+                Atom::Node((atom_value, inner_siblings)) => {
                     // Add current item to the sequence before/after processing chldren,
                     // depending on the current level's strategy
-                    let chidren_depth = prefix.len() + 1;
-                    if self.strategies[chidren_depth] {
-                        if let Some(v) = value {
-                            seq.push((new_prefix.clone(), v.clone(), actor.clone()));
+                    let children_strategy = self.strategies[new_prefix.len()];
+                    if children_strategy {
+                        if let Some(v) = &atom_value.value {
+                            seq.push((new_prefix.clone(), v.clone(), atom_value.clock.clone()));
                         }
                         self.flatten_tree(&inner_siblings, new_prefix, seq);
                     } else {
                         self.flatten_tree(&inner_siblings, new_prefix.clone(), seq);
-                        if let Some(v) = value {
-                            seq.push((new_prefix.clone(), v.clone(), actor.clone()));
+                        if let Some(v) = &atom_value.value {
+                            seq.push((new_prefix.clone(), v.clone(), atom_value.clock.clone()));
                         }
                     }
                 }
+                Atom::MiniNodes(mini_nodes) => {
+                    // Add mini nodes to the sequence
+                    self.flatten_atom_value(mini_nodes, new_prefix.clone(), seq);
+                }
             }
+        }
+    }
+
+    /// Flattens the mini-nodes to form a sequence
+    fn flatten_atom_value(
+        &self,
+        atom_value: &MiniNodes<V, A>,
+        prefix: Identifier,
+        seq: &mut Vec<(Identifier, V, VClock<A>)>,
+    ) {
+        // We return all miin-nodes here with the same Identifier,
+        // this is ok for now as we don't support inserting between them.
+        for (_, AtomValue { clock, value }) in atom_value.iter() {
+            if let Some(val) = value {
+                seq.push((prefix.clone(), val.clone(), clock.clone()));
+            };
         }
     }
 }
@@ -524,18 +623,38 @@ mod test {
     }
 
     #[test]
-    fn test_default() {
-        let seq = LSeq::<u64, u64>::default();
-        assert_eq!(
-            seq,
-            LSeq {
-                boundary: DEFAULT_STRATEGY_BOUNDARY,
-                root_arity: DEFAULT_ROOT_BASE,
-                strategy: DEFAULT_STRATEGY,
-                strategies: vec![true],
-                siblings: SiblingsNodes::default()
-            }
-        );
+    fn test_insert_concurrent() {
+        let mut seq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
+        let actor1 = 100;
+        let actor2 = 200;
+
+        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
+        let add_ctx2 = seq.read_ctx().derive_add_ctx(actor2);
+
+        // actor1 appends A to [] (between BEGIN and END)
+        let op_actor1 = seq.insert('A', None, None, add_ctx1.clone());
+
+        // actor2 appends B to [] (between BEGIN and END)
+        let op_actor2 = seq.insert('B', None, None, add_ctx2.clone());
+
+        seq.apply(op_actor1);
+        let current_seq = seq.read().val;
+        println!("CURR SEQ: {:?}", current_seq);
+
+        seq.apply(op_actor2);
+        let current_seq = seq.read().val;
+        println!("CURR SEQ: {:?}", current_seq);
+
+        // actor1 appends C to [A, B]/[B, A] (between BEGIN and END)
+        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
+        println!("CTX to send: {:?}", add_ctx1);
+        let op_actor1 = seq.insert('C', None, None, add_ctx1.clone());
+        seq.apply(op_actor1);
+
+        // Test final length
+        let current_seq = seq.read().val;
+        println!("FINAL SEQ: {:?}", current_seq);
+        assert_eq!(current_seq.len(), 3);
     }
 
     #[test]
@@ -601,7 +720,7 @@ mod test {
     }
 
     #[test]
-    fn test_several_insertions() {
+    fn test_several_inserts() {
         let mut seq = LSeq::<char, u64>::default();
         let actor = 100;
 
@@ -794,7 +913,7 @@ mod test {
     #[test]
     #[ignore]
     fn test_many_appends() {
-        let mut seq = LSeq::<u64, u64>::new(1, 512, Strategy::BoundaryPlus);
+        let mut seq = LSeq::<u64, u64>::new(1, 512, LSeqStrategy::BoundaryPlus);
         let actor = 100;
         let amount = 30000;
 
@@ -812,7 +931,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_insert_p_greater_than_q() {
-        let mut seq = LSeq::<char, u64>::new(2, 2, Strategy::Alternate);
+        let mut seq = LSeq::<char, u64>::new(2, 2, LSeqStrategy::Alternate);
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
@@ -937,39 +1056,5 @@ mod test {
         let current_seq = seq.read().val;
         println!("FINAL SEQ: {:?}", current_seq);
         assert_eq!(current_seq.len(), 5);
-    }
-
-    #[test]
-    fn test_insert_two_actors() {
-        let mut seq = LSeq::<char, u64>::new(2, 4, Strategy::BoundaryPlus);
-        let actor1 = 100;
-        let actor2 = 200;
-
-        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
-        let add_ctx2 = seq.read_ctx().derive_add_ctx(actor2);
-
-        // actor1 appends A to [] (between BEGIN and END)
-        let op_actor1 = seq.insert('A', None, None, add_ctx1.clone());
-
-        // actor2 appends B to [] (between BEGIN and END)
-        let op_actor2 = seq.insert('B', None, None, add_ctx2.clone());
-
-        seq.apply(op_actor1);
-        let current_seq = seq.read().val;
-        println!("CURR SEQ: {:?}", current_seq);
-
-        seq.apply(op_actor2);
-        let current_seq = seq.read().val;
-        println!("CURR SEQ: {:?}", current_seq);
-
-        // actor1 appends B to [A, B]/[B, A] (between BEGIN and END)
-        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
-        let op_actor1 = seq.insert('B', None, None, add_ctx1.clone());
-        seq.apply(op_actor1);
-
-        // Test final length
-        let current_seq = seq.read().val;
-        println!("FINAL SEQ: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
     }
 }
