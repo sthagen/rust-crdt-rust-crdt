@@ -91,11 +91,11 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
         }
     }
 
-    pub fn ingest(&mut self, op: T) -> Option<T> {
+    pub fn ingest(&mut self, op: T) -> Vec<T> {
         let v = self.peers.entry(op.dot().actor).or_default();
         // Have we already seen this op?
         if v.is_ready(op.dot().counter) {
-            return None;
+            return vec![];
         }
 
         v.increment(op.dot().counter);
@@ -107,28 +107,33 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
         match op.happens_after() {
             // Dang! we have a happens after relation!
             Some(dot) => {
-                // Let's buffer this operation then.
-                if !self.saw_site_dot(&dot) {
+                if self.saw_site_dot(&dot) {
+                    // We've already processed the op we are dependent on
+                    // so we can release it immediately
+                    vec![op]
+                } else {
+                    // We have to wait on the dependent op so
+                    // let's buffer this operation then.
                     self.buffer.insert(dot, op);
                     // and do nothing
-                    None
-                } else {
-                    Some(op)
+                    vec![]
                 }
+
+                // TAI: Do we have to check for dependent ops ala. the None case below?
             }
             None => {
                 // Ok so we're not causally constrained, but maybe we already saw an associated
                 // causal operation? If so let's just delete the pair
                 match self.buffer.remove(&op.dot()) {
-                    Some(_) => None, // we are dropping the dependent op! that can't be right
-                    None => Some(op),
+                    Some(dependent) => vec![op, dependent],
+                    None => vec![op],
                 }
             }
         }
     }
 
     fn saw_site_dot(&self, dot: &Dot<A>) -> bool {
-	// TODO: shouldn't need to deconstruct a dot like this
+        // TODO: shouldn't need to deconstruct a dot like this
         match self.peers.get(&dot.actor) {
             Some(ent) => ent.is_ready(dot.counter),
             None => false,
@@ -204,8 +209,8 @@ mod test {
             local_id: 1,
             op: Op::Insert(0),
         };
-        assert_eq!(barrier.ingest(del), None);
-        assert_eq!(barrier.ingest(ins), None);
+        assert_eq!(barrier.ingest(del.clone()), vec![]);
+        assert_eq!(barrier.ingest(ins.clone()), vec![ins, del]); // ops released back in  causal order
     }
 
     #[test]
@@ -217,7 +222,7 @@ mod test {
             local_id: 1,
             op: Op::Insert(0),
         };
-        assert_eq!(barrier.ingest(ins.clone()), Some(ins.clone()));
+        assert_eq!(barrier.ingest(ins.clone()), vec![ins]);
     }
 
     #[test]
@@ -234,8 +239,8 @@ mod test {
             local_id: 1,
             op: Op::Delete(1, 1),
         };
-        assert_eq!(barrier.ingest(ins.clone()), Some(ins));
-        assert_eq!(barrier.ingest(del.clone()), Some(del));
+        assert_eq!(barrier.ingest(ins.clone()), vec![ins]);
+        assert_eq!(barrier.ingest(del.clone()), vec![del]);
     }
 
     #[test]
@@ -252,8 +257,8 @@ mod test {
             local_id: 1,
             op: Op::Insert(0),
         };
-        assert_eq!(barrier.ingest(del), None);
-        assert_eq!(barrier.ingest(ins), None);
+        assert_eq!(barrier.ingest(del.clone()), vec![]);
+        assert_eq!(barrier.ingest(ins.clone()), vec![ins, del]); // ops released back in  causal order
     }
 
     #[test]
