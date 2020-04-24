@@ -1,4 +1,4 @@
-use super::nodes::{Atom, AtomValue, Identifier, MiniNodes, SiblingsNodes};
+use super::nodes::{Atom, AtomPayload, Identifier, MiniNodes, SiblingsNodes};
 use crate::ctx::{AddCtx, ReadCtx, RmCtx};
 use crate::traits::{Causal, CmRDT, CvRDT};
 use crate::vclock::{Actor, VClock};
@@ -231,35 +231,19 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         // Let's now attempt to insert the new identifier in the tree at new_id_depth
         let siblings_for_insert = self.find_siblings_in_tree(new_id_depth, &p, &q, depth_strategy);
 
-        // create new level if that's needed
-        /*if cur_depth_nodes.get(&new_number).is_none() {
-            println!("Create a new level");
-            let children = SiblingsNodes::new();
-            let atom_value = AtomValue {
-                clock: VClock::default(),
-                value: None,
-            };
-            let new_atom = Atom::Node((atom_value, children));
-            cur_depth_nodes.insert(new_number, new_atom);
-        }*/
-
-        // 'cur_depth_nodes' should now be referencing the siblings
-        // where we need to insert the new number
+        // We now need to insert the new number in the siblings we just looked up
         println!("New number {} for depth {}", new_number, new_id_depth);
         println!("INCOMING CLOCK: {}", clock);
         match siblings_for_insert.get_mut(&new_number) {
-            Some(Atom::Node((cur_atom_value, _inner_siblings))) => {
+            Some(Atom::Node { payload, children }) => {
                 println!(
                     "Number {} already existing at depth {}",
                     new_number, new_id_depth
                 );
-                println!("CURRENT CLOCK: {}", cur_atom_value.clock);
-                println!(
-                    "CLOCKS Comparison: {:?}",
-                    cur_atom_value.clock.partial_cmp(&clock)
-                );
+                println!("CURRENT CLOCK: {}", payload.clock);
+                println!("CLOCKS Comparison: {:?}", payload.clock.partial_cmp(&clock));
 
-                match (cur_atom_value.clock).partial_cmp(&clock) {
+                match (payload.clock).partial_cmp(&clock) {
                     Some(Ordering::Less) => {
                         println!("Op's clock is newer, we don't allow this operation, cannot mutate a value TODO");
                         // TODO: perhaps find a new number to insert as it seems to be a brand new insert
@@ -272,28 +256,30 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                         // Let's convert current Node into a MiniNodes to keep both values
                         // Insert both values in the mini_nodes
                         let mut mini_nodes = MiniNodes::default();
-                        let new_atom_value = AtomValue {
+                        let new_atom_payload = AtomPayload {
                             clock: clock.clone(),
                             value: Some(value.clone()),
                         };
-                        // TODO: we need to use something like the Actor to order mini-nodes deterministically
-                        // but at the moment we don't have info of which actor/site sent this request
-                        mini_nodes.insert(1, new_atom_value);
-                        mini_nodes.insert(2, cur_atom_value.clone());
 
-                        let new_atom = Atom::MiniNodes(mini_nodes); // TODO insert with inner_siblings
+                        // We use the clock to order mini-nodes deterministically
+                        mini_nodes.insert(new_atom_payload.clock.clone(), new_atom_payload);
+                        mini_nodes.insert(payload.clock.clone(), payload.clone());
+
+                        let new_atom = Atom::MajorNode {
+                            payload: mini_nodes,
+                            children: children.clone(),
+                        };
                         siblings_for_insert.insert(new_number, new_atom);
 
                         // Merge clock into the LSeq's main clock
                         self.merge_clock(clock);
                     }
-                    _ => {
-                        // it's either Greater or Equal,
-                        // ignore it, we've already seen this operation
+                    Some(Ordering::Equal) | Some(Ordering::Greater) => {
+                        // Ignore it, we've already seen this operation
                     }
                 }
             }
-            Some(Atom::MiniNodes(_)) => {
+            Some(Atom::MajorNode { .. }) => {
                 // TODO: depending on the clock, we may need to find a new number rather than
                 // assume it's an insert between mini-nodes.
 
@@ -304,12 +290,12 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 // It seems the slot picked is available, thus we'll use that one
                 println!("It's a brand new identifier!");
                 let children = SiblingsNodes::new();
-                let atom_value = AtomValue {
+                let payload = AtomPayload {
                     clock: clock.clone(),
                     value: Some(value.clone()),
                 };
-                let new_atom = Atom::Node((atom_value, children));
-                siblings_for_insert.insert(new_number, new_atom);
+                let atom = Atom::Node { payload, children };
+                siblings_for_insert.insert(new_number, atom);
 
                 // Merge clock into the LSeq's main clock
                 self.merge_clock(clock);
@@ -327,10 +313,15 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     fn find_new_id_depth(&self, p: &Identifier, q: &Identifier) -> (usize, u64) {
         let mut interval: u64;
         let mut p_position = 0;
-        let mut q_position = 0;
+        let mut q_position = if q.is_empty() {
+            1 // this will cause we get arity -1 as value of q for very first level
+        } else {
+            0 // this will allow us to simply use the value from q[0]
+        };
         let mut new_id_depth = 0;
+
         loop {
-            // tree arity at current depth
+            // Tree arity at current depth
             let arity = self.arity_at(new_id_depth);
 
             println!(
@@ -344,6 +335,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 let i = p.at(new_id_depth);
                 p_position = (p_position << shift) + i;
             } else {
+                // there is no number for p at this depth, thus we use
+                // the equivalent of 0 in the range corresponding at this depth
                 p_position = p_position << shift;
             }
 
@@ -352,7 +345,9 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 let i = q.at(new_id_depth);
                 q_position = (q_position << shift) + i;
             } else {
-                q_position = (q_position << shift) + arity;
+                // there is no number for q at this depth, thus we use the maximum
+                // possible for this depth (it should be the same as arity of this depth - 1)
+                q_position = (q_position << shift) - 1;
             }
 
             // What's the interval between p and q identifiers at current depth?
@@ -456,8 +451,13 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 
             // Now we can just step into the next depth of siblings to keep traversing the tree
             match cur_depth_nodes.get_mut(&cur_number) {
-                Some(Atom::Node((_, ref mut inner_siblings))) => {
-                    cur_depth_nodes = inner_siblings;
+                Some(Atom::Node {
+                    ref mut children, ..
+                })
+                | Some(Atom::MajorNode {
+                    ref mut children, ..
+                }) => {
+                    cur_depth_nodes = children;
                 }
                 _ => {
                     //if d < depth - 1 {
@@ -484,15 +484,27 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     /// Recursivelly forget the given clock in each of the atoms' clock
     fn forget_clock_in_tree(siblings: &mut SiblingsNodes<V, A>, c: &VClock<A>) {
         siblings.iter_mut().for_each(|s| match s {
-            (_, Atom::Node((AtomValue { ref mut clock, .. }, ref mut inner_siblings))) => {
+            (
+                _,
+                Atom::Node {
+                    payload: AtomPayload { ref mut clock, .. },
+                    children: ref mut inner_siblings,
+                },
+            ) => {
                 clock.forget(c);
                 LSeq::forget_clock_in_tree(inner_siblings, c);
             }
-            (_, Atom::MiniNodes(ref mut mini_nodes)) => {
+            (
+                _,
+                Atom::MajorNode {
+                    payload: ref mut mini_nodes,
+                    children: ref mut inner_siblings,
+                },
+            ) => {
                 mini_nodes.iter_mut().for_each(|(_, ref mut atom_value)| {
                     atom_value.clock.forget(c);
-                    //LSeq::forget_clock_in_tree(inner_siblings, c);
-                })
+                });
+                LSeq::forget_clock_in_tree(inner_siblings, c);
             }
         });
     }
@@ -504,8 +516,10 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         for _ in 0..id_depth - 1 {
             let cur_number = id.remove(0);
             match cur_depth_nodes.get_mut(&cur_number) {
-                Some(Atom::Node((_, ref mut inner_siblings))) => {
-                    cur_depth_nodes = inner_siblings;
+                Some(Atom::Node {
+                    ref mut children, ..
+                }) => {
+                    cur_depth_nodes = children;
                 }
                 _ => {
                     // atom not found with given identifier
@@ -516,19 +530,19 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 
         if id.len() == 1 {
             match cur_depth_nodes.get(&id.at(0)) {
-                Some(Atom::Node((_, ref inner_siblings))) => {
+                Some(Atom::Node { ref children, .. }) => {
                     // found it as a node, we need to clear the value from it
-                    let new_atom = Atom::Node((
-                        AtomValue {
+                    let atom = Atom::Node {
+                        payload: AtomPayload {
                             clock: clock.clone(),
                             value: None,
                         },
-                        inner_siblings.clone(),
-                    ));
-                    cur_depth_nodes.insert(id.at(0), new_atom);
+                        children: children.clone(),
+                    };
+                    cur_depth_nodes.insert(id.at(0), atom);
                     self.merge_clock(clock);
                 }
-                Some(Atom::MiniNodes(_mini_nodes)) => {
+                Some(Atom::MajorNode { .. }) => {
                     // found it as a mini node, we need to clear
                     // the value from the corresponding mini node
                     // TODO
@@ -554,30 +568,41 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             new_prefix.push(*id);
 
             match atom {
-                Atom::Node((atom_value, inner_siblings)) if inner_siblings.is_empty() => {
-                    if let Some(v) = &atom_value.value {
-                        seq.push((new_prefix.clone(), v.clone(), atom_value.clock.clone()));
+                Atom::Node { payload, children } if children.is_empty() => {
+                    if let Some(v) = &payload.value {
+                        seq.push((new_prefix.clone(), v.clone(), payload.clock.clone()));
                     }
                 }
-                Atom::Node((atom_value, inner_siblings)) => {
-                    // Add current item to the sequence before/after processing chldren,
+                Atom::Node { payload, children } => {
+                    // Add current atom's value to the sequence before/after processing children,
                     // depending on the current level's strategy
                     let children_strategy = self.strategies[new_prefix.len()];
                     if children_strategy {
-                        if let Some(v) = &atom_value.value {
-                            seq.push((new_prefix.clone(), v.clone(), atom_value.clock.clone()));
+                        if let Some(v) = &payload.value {
+                            seq.push((new_prefix.clone(), v.clone(), payload.clock.clone()));
                         }
-                        self.flatten_tree(&inner_siblings, new_prefix, seq);
+                        self.flatten_tree(&children, new_prefix, seq);
                     } else {
-                        self.flatten_tree(&inner_siblings, new_prefix.clone(), seq);
-                        if let Some(v) = &atom_value.value {
-                            seq.push((new_prefix.clone(), v.clone(), atom_value.clock.clone()));
+                        self.flatten_tree(&children, new_prefix.clone(), seq);
+                        if let Some(v) = &payload.value {
+                            seq.push((new_prefix.clone(), v.clone(), payload.clock.clone()));
                         }
                     }
                 }
-                Atom::MiniNodes(mini_nodes) => {
-                    // Add mini nodes to the sequence
-                    self.flatten_atom_value(mini_nodes, new_prefix.clone(), seq);
+                Atom::MajorNode { payload, children } if children.is_empty() => {
+                    self.flatten_atom_value(payload, new_prefix.clone(), seq);
+                }
+                Atom::MajorNode { payload, children } => {
+                    // Add mini nodes to the sequence before/after processing children,
+                    // depending on the current level's strategy
+                    let children_strategy = self.strategies[new_prefix.len()];
+                    if children_strategy {
+                        self.flatten_atom_value(payload, new_prefix.clone(), seq);
+                        self.flatten_tree(&children, new_prefix, seq);
+                    } else {
+                        self.flatten_tree(&children, new_prefix.clone(), seq);
+                        self.flatten_atom_value(payload, new_prefix.clone(), seq);
+                    }
                 }
             }
         }
@@ -592,7 +617,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     ) {
         // We return all miin-nodes here with the same Identifier,
         // this is ok for now as we don't support inserting between them.
-        for (_, AtomValue { clock, value }) in atom_value.iter() {
+        for (_, AtomPayload { clock, value }) in atom_value.iter() {
             if let Some(val) = value {
                 seq.push((prefix.clone(), val.clone(), clock.clone()));
             };
@@ -604,457 +629,500 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 mod test {
     use super::*;
 
-    // Helper to populate an LSeq with some elements
-    fn populate_seq<V: Ord + Clone + Display, A: Actor + Display>(
-        elems: &[V],
-        seq: &mut LSeq<V, A>,
-        actor: A,
-    ) {
-        let mut reference_id = None;
-        for e in elems {
-            // Insert e between BEGIN and END
-            let add_ctx = seq.read_ctx().derive_add_ctx(actor.clone());
-            seq.apply(seq.insert(e.clone(), reference_id, None, add_ctx.clone()));
-
-            let seq = seq.read().val;
-            reference_id = Some(seq[seq.len() - 1].0.clone());
-            println!("SEQ: {}", seq.len());
-        }
-    }
-
     #[test]
-    fn test_insert_concurrent() {
-        let mut seq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
-        let actor1 = 100;
-        let actor2 = 200;
-
-        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
-        let add_ctx2 = seq.read_ctx().derive_add_ctx(actor2);
-
-        // actor1 appends A to [] (between BEGIN and END)
-        let op_actor1 = seq.insert('A', None, None, add_ctx1.clone());
-
-        // actor2 appends B to [] (between BEGIN and END)
-        let op_actor2 = seq.insert('B', None, None, add_ctx2.clone());
-
-        seq.apply(op_actor1);
-        let current_seq = seq.read().val;
-        println!("CURR SEQ: {:?}", current_seq);
-
-        seq.apply(op_actor2);
-        let current_seq = seq.read().val;
-        println!("CURR SEQ: {:?}", current_seq);
-
-        // actor1 appends C to [A, B]/[B, A] (between BEGIN and END)
-        let add_ctx1 = seq.read_ctx().derive_add_ctx(actor1);
-        println!("CTX to send: {:?}", add_ctx1);
-        let op_actor1 = seq.insert('C', None, None, add_ctx1.clone());
-        seq.apply(op_actor1);
-
-        // Test final length
-        let current_seq = seq.read().val;
-        println!("FINAL SEQ: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 3);
-    }
-
-    #[test]
-    fn test_simple_insert() {
-        let mut seq = LSeq::<char, u64>::default();
+    fn test_append() {
+        let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
         let actor = 100;
 
-        // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        seq.apply(seq.insert('A', None, None, add_ctx.clone()));
+        // Append A to [] (between BEGIN and END)
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
 
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        assert_eq!(current_seq[0].1, 'A');
+        // Append B to [A] (between A and END)
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
 
-        // Insert B to [A] (between A and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let (id_of_a, _, _) = &current_seq[0];
-        seq.apply(seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone()));
+        // Append C to [A, B] (between B and END)
+        let seq = lseq.read();
+        println!("SEQ [A, B]: {:?}", seq.val);
+        assert_eq!(seq.val.len(), 2);
+        let (b_id, _, _) = &seq.val[1];
 
-        let current_seq = seq.read().val;
-        println!("SEQ [A, B]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
-        assert_eq!(current_seq[0].1, 'A');
-        assert_eq!(current_seq[1].1, 'B');
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
+
+        // Append D to [A, B, C] (between C and END)
+        let seq = lseq.read();
+        println!("SEQ [A, B, C]: {:?}", seq.val);
+        assert_eq!(seq.val.len(), 3);
+        let (c_id, _, _) = &seq.val[2];
+
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('D', Some(c_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
+
+        // Test identifiers and values
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 4);
+
+        let (a_id, a_val, _) = &seq_values[0];
+        let (b_id, b_val, _) = &seq_values[1];
+        let (c_id, c_val, _) = &seq_values[2];
+        let (d_id, d_val, _) = &seq_values[3];
+
+        assert_eq!(*a_id, Identifier::new(&[1]));
+        assert_eq!(*b_id, Identifier::new(&[2]));
+        assert_eq!(*c_id, Identifier::new(&[2, 1]));
+        assert_eq!(*d_id, Identifier::new(&[2, 2]));
+
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*b_val, 'B');
+        assert_eq!(*c_val, 'C');
+        assert_eq!(*d_val, 'D');
     }
 
     #[test]
     fn test_delete() {
-        let mut seq = LSeq::<char, u64>::default();
-        let actor = 100;
-
-        // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        seq.apply(seq.insert('A', None, None, add_ctx.clone()));
-
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        assert_eq!(current_seq[0].1, 'A');
-
-        // Insert B to [A] (between A and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let (id_of_a, _, _) = &current_seq[0];
-        seq.apply(seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone()));
-
-        let current_seq = seq.read().val;
-        println!("SEQ [A, B]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
-        assert_eq!(current_seq[0].1, 'A');
-        assert_eq!(current_seq[1].1, 'B');
-
-        // Delete B from [A, B]
-        let rm_ctx = seq.read_ctx().derive_rm_ctx();
-        let (id_of_b, _, _) = &current_seq[1];
-        seq.apply(seq.delete(id_of_b.clone(), rm_ctx.clone()));
-
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        assert_eq!(current_seq[0].1, 'A');
-    }
-
-    #[test]
-    fn test_several_inserts() {
-        let mut seq = LSeq::<char, u64>::default();
-        let actor = 100;
-
-        // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('A', None, None, add_ctx.clone());
-        assert_eq!(
-            op,
-            Op::Insert {
-                clock: add_ctx.clock,
-                value: 'A',
-                p: None,
-                q: None
-            }
-        );
-        seq.apply(op);
-
-        // Insert B to [A] (between BEGIN and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _, _) = &current_seq[0];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('B', None, Some(id_of_a.clone()), add_ctx.clone());
-        seq.apply(op);
-
-        // Insert C to [B, A] (between B and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _, _) = &current_seq[0];
-        let (id_of_a, _, _) = &current_seq[1];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'C',
-            Some(id_of_b.clone()),
-            Some(id_of_a.clone()),
-            add_ctx.clone(),
-        );
-        seq.apply(op);
-
-        // Insert D to [B, C, A] (between C and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, C, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _, _) = &current_seq[1];
-        let (id_of_a, _, _) = &current_seq[2];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'D',
-            Some(id_of_c.clone()),
-            Some(id_of_a.clone()),
-            add_ctx.clone(),
-        );
-        seq.apply(op);
-
-        // Insert E to [B, C, D, A] (between B and C)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, C, D, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 4);
-        let (id_of_b, _, _) = &current_seq[0];
-        let (id_of_c, _, _) = &current_seq[1];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'E',
-            Some(id_of_b.clone()),
-            Some(id_of_c.clone()),
-            add_ctx.clone(),
-        );
-        seq.apply(op);
-
-        // Insert F to [B, E, C, D, A] (between D and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, E, C, D, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 5);
-        let (id_of_d, _, _) = &current_seq[3];
-        let (id_of_a, _, _) = &current_seq[4];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'F',
-            Some(id_of_d.clone()),
-            Some(id_of_a.clone()),
-            add_ctx.clone(),
-        );
-        seq.apply(op);
-
-        // Test final length
-        let current_seq = seq.read().val;
-        println!("FINAL SEQ: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 6);
-    }
-
-    #[test]
-    fn test_append() {
-        let mut seq = LSeq::<char, u64>::default();
+        let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
         let actor = 100;
 
         // Append A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('A', None, None, add_ctx.clone());
-        seq.apply(op);
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
 
         // Append B to [A] (between A and END)
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _, _) = &current_seq[0];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone());
-        seq.apply(op);
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
 
         // Append C to [A, B] (between B and END)
-        let current_seq = seq.read().val;
-        println!("SEQ [A, B]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _, _) = &current_seq[1];
+        let seq = lseq.read();
+        println!("SEQ [A, B]: {:?}", seq.val);
+        assert_eq!(seq.val.len(), 2);
+        let (b_id, _, _) = &seq.val[1];
 
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('C', Some(id_of_b.clone()), None, add_ctx.clone());
-        seq.apply(op);
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
 
-        // Append D to [A, B, C] (between C and END)
-        let current_seq = seq.read().val;
-        println!("SEQ [A, B, C]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _, _) = &current_seq[2];
+        // Delete B from [A, B, C]
+        let rm_ctx = lseq.read_ctx().derive_rm_ctx();
+        lseq.apply(lseq.delete(b_id.clone(), rm_ctx.clone()));
 
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('D', Some(id_of_c.clone()), None, add_ctx.clone());
-        seq.apply(op);
+        // Test identifiers and values
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 2);
 
-        // Test final length
-        let current_seq = seq.read().val;
-        println!("FINAL SEQ: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 4);
+        let (a_id, a_val, _) = &seq_values[0];
+        let (c_id, c_val, _) = &seq_values[1];
+
+        assert_eq!(*a_id, Identifier::new(&[1]));
+        assert_eq!(*c_id, Identifier::new(&[2, 1]));
+
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*c_val, 'C');
+    }
+
+    #[test]
+    fn test_insert_op_already_applied() {
+        let mut lseq = LSeq::<char, u64>::new(10, 32, LSeqStrategy::BoundaryPlus);
+        let actor1 = 100;
+        let actor2 = 200;
+
+        // actor1 inserts A to [] (between BEGIN and END)
+        let add_ctx1 = lseq.read_ctx().derive_add_ctx(actor1);
+        let op_actor1 = lseq.insert('A', None, None, add_ctx1.clone());
+        lseq.apply(op_actor1.clone());
+
+        // actor2 inserts B to [A] (between A and END)
+        let seq = lseq.read();
+        let add_ctx2 = seq.derive_add_ctx(actor2);
+        let (a_id, _, _) = &seq.val[0];
+        let op_actor2 = lseq.insert('B', Some(a_id.clone()), None, add_ctx2.clone());
+        lseq.apply(op_actor2.clone());
+
+        // lseq now sees both insert operations again as they were broadcasted by other sites again
+        lseq.apply(op_actor1.clone());
+        lseq.apply(op_actor2.clone());
+
+        // Test that only two insert operations were persisted
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 2);
+
+        let (a_id, a_val, _) = &seq_values[0];
+        let (b_id, b_val, _) = &seq_values[1];
+
+        assert_eq!(*a_id, Identifier::new(&[6]));
+        assert_eq!(*b_id, Identifier::new(&[12]));
+
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*b_val, 'B');
+    }
+
+    #[test]
+    fn test_insert_p_higher_depth_than_q() {
+        let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
+        let actor = 100;
+
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+
+        // insert A to [] (between BEGIN and END)
+        let op_actor = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // insert B to [A] (between A and END)
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op_actor = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // insert C to [A, B] (between A and B)
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[1];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op_actor = lseq.insert('C', Some(a_id.clone()), Some(b_id.clone()), add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // insert D to [A, C, B] (between C and B)
+        let seq = lseq.read();
+        let (c_id, _, _) = &seq.val[1];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op_actor = lseq.insert('D', Some(c_id.clone()), Some(b_id.clone()), add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // Test identifiers and values are in correct order in the sequence
+        let seq_values = lseq.read().val;
+        assert_eq!(seq_values.len(), 4);
+        let (a_id, a_val, _) = &seq_values[0];
+        let (c_id, c_val, _) = &seq_values[1];
+        let (d_id, d_val, _) = &seq_values[2];
+        let (b_id, b_val, _) = &seq_values[3];
+        println!("FINAL SEQ: {:?}", seq_values);
+
+        assert_eq!(*a_id, Identifier::new(&[1]));
+        assert_eq!(*b_id, Identifier::new(&[2]));
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*b_val, 'B');
+
+        assert_eq!(*c_id, Identifier::new(&[1, 1]));
+        assert_eq!(*c_val, 'C');
+
+        assert_eq!(*d_id, Identifier::new(&[1, 2]));
+        assert_eq!(*d_val, 'D');
+    }
+
+    #[test]
+    fn test_insert_q_higher_depth_than_p() {
+        let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
+        let actor = 100;
+
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+
+        // insert A to [] (between BEGIN and END)
+        let op_actor = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // insert B to [A] (between A and END)
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op_actor = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // insert C to [A, B] (between B and END)
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[1];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op_actor = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // insert D to [A, B, C] (between A and C)
+        let seq = lseq.read();
+        let (c_id, _, _) = &seq.val[2];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op_actor = lseq.insert('D', Some(a_id.clone()), Some(c_id.clone()), add_ctx.clone());
+        lseq.apply(op_actor);
+
+        // Test identifiers and values are in correct order in the sequence
+        let seq_values = lseq.read().val;
+        assert_eq!(seq_values.len(), 4);
+        let (a_id, a_val, _) = &seq_values[0];
+        let (d_id, d_val, _) = &seq_values[1];
+        let (b_id, b_val, _) = &seq_values[2];
+        let (c_id, c_val, _) = &seq_values[3];
+        println!("FINAL SEQ: {:?}", seq_values);
+
+        assert_eq!(*a_id, Identifier::new(&[1]));
+        assert_eq!(*b_id, Identifier::new(&[2]));
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*b_val, 'B');
+
+        assert_eq!(*c_id, Identifier::new(&[2, 1]));
+        assert_eq!(*c_val, 'C');
+
+        assert_eq!(*d_id, Identifier::new(&[1, 1]));
+        assert_eq!(*d_val, 'D');
     }
 
     #[test]
     fn test_insert_at_begining() {
-        let mut seq = LSeq::<char, u64>::default();
+        let mut lseq = LSeq::<char, u64>::default();
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('A', None, None, add_ctx.clone());
-        seq.apply(op);
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
 
         // Insert B to [A] (between BEGIN and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _, _) = &current_seq[0];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('B', None, Some(id_of_a.clone()), add_ctx.clone());
-        seq.apply(op);
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('B', None, Some(a_id.clone()), add_ctx.clone());
+        lseq.apply(op);
 
         // Insert C to [B, A] (between BEGIN and B)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _, _) = &current_seq[0];
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('C', None, Some(b_id.clone()), add_ctx.clone());
+        lseq.apply(op);
 
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('C', None, Some(id_of_b.clone()), add_ctx.clone());
-        seq.apply(op);
+        // Test identifiers and values are in correct order in the sequence
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 3);
+        let (c_id, c_val, _) = &seq_values[0];
+        let (b_id, b_val, _) = &seq_values[1];
+        let (a_id, a_val, _) = &seq_values[2];
 
-        // Insert D to [C, B, A] (between BEGIN and C)
-        let current_seq = seq.read().val;
-        println!("SEQ [C, B, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _, _) = &current_seq[0];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('D', None, Some(id_of_c.clone()), add_ctx.clone());
-        seq.apply(op);
-
-        // Test final length
-        let current_seq = seq.read().val;
-        println!("FINAL SEQ: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 4);
+        assert_eq!(*c_id, Identifier::new(&[2]));
+        assert_eq!(*b_id, Identifier::new(&[3]));
+        assert_eq!(*a_id, Identifier::new(&[6]));
+        assert_eq!(*c_val, 'C');
+        assert_eq!(*b_val, 'B');
+        assert_eq!(*a_val, 'A');
     }
 
     #[test]
-    #[ignore]
-    fn test_many_appends() {
-        let mut seq = LSeq::<u64, u64>::new(1, 512, LSeqStrategy::BoundaryPlus);
+    fn test_insert_concurrent() {
+        let lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
+        let mut site1_seq = lseq.clone();
+        let mut site2_seq = lseq.clone();
+        let actor1 = 100;
+        let actor2 = 200;
+
+        let seq = lseq.read_ctx();
+        let add_ctx1 = seq.derive_add_ctx(actor1);
+        let add_ctx2 = seq.derive_add_ctx(actor2);
+
+        // actor1 and actor2 insert concurrently A and B to [] (between BEGIN and END)
+        let op_actor1 = lseq.insert('A', None, None, add_ctx1.clone());
+        let op_actor2 = lseq.insert('B', None, None, add_ctx2.clone());
+
+        // in site1 we see concurrent ops, first from actor1 then from actor2
+        site1_seq.apply(op_actor1.clone());
+        site1_seq.apply(op_actor2.clone());
+
+        // in site2 we see concurrent ops in opposite order, first from actor2 then from actor1
+        site2_seq.apply(op_actor2.clone());
+        site2_seq.apply(op_actor1);
+
+        // actor1 inserts a C to [A, B] (between B and END)
+        let seq = site1_seq.read();
+        let (b_id, _, _) = &seq.val[1];
+        let add_ctx1 = seq.derive_add_ctx(actor1);
+        let op_actor1 = site1_seq.insert('C', Some(b_id.clone()), None, add_ctx1.clone());
+        site1_seq.apply(op_actor1.clone());
+        site2_seq.apply(op_actor1);
+
+        // lastly actor1 inserts a children of the MajorNode A/B (the node holding mini-nodes)
+        // i.e. D to [A, B, C] (between A and C)
+        let seq = site1_seq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let (c_id, _, _) = &seq.val[2];
+        let add_ctx1 = seq.derive_add_ctx(actor1);
+        let op_actor1 = site1_seq.insert(
+            'D',
+            Some(a_id.clone()),
+            Some(c_id.clone()),
+            add_ctx1.clone(),
+        );
+        site1_seq.apply(op_actor1.clone());
+        site2_seq.apply(op_actor1);
+
+        // Test we read the exact same sequence from both sites
+        let seq1_values = site1_seq.read().val;
+        let seq2_values = site2_seq.read().val;
+        println!("FINAL SEQ1: {:?}", seq1_values);
+        println!("FINAL SEQ2: {:?}", seq2_values);
+        assert_eq!(seq1_values.len(), 4);
+        assert_eq!(seq2_values.len(), 4);
+        assert_eq!(seq1_values[0], seq2_values[0]);
+        assert_eq!(seq1_values[1], seq2_values[1]);
+        assert_eq!(seq1_values[2], seq2_values[2]);
+        assert_eq!(seq1_values[3], seq2_values[3]);
+
+        // due to clock being the disambiguator, value A should be before B since actor1 (100) < actor2 (200)
+        let (a_id, a_val, _) = &seq1_values[0];
+        let (b_id, b_val, _) = &seq1_values[1];
+        let (d_id, d_val, _) = &seq1_values[2];
+        let (c_id, c_val, _) = &seq1_values[3];
+
+        assert_eq!(*a_id, Identifier::new(&[1]));
+        assert_eq!(*b_id, Identifier::new(&[1]));
+        assert_eq!(*d_id, Identifier::new(&[1, 1]));
+        assert_eq!(*c_id, Identifier::new(&[2]));
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*b_val, 'B');
+        assert_eq!(*d_val, 'D');
+        assert_eq!(*c_val, 'C');
+    }
+
+    #[test]
+    fn test_several_inserts() {
+        let mut lseq = LSeq::<char, u64>::new(4, 4, LSeqStrategy::BoundaryPlus);
         let actor = 100;
-        let amount = 30000;
 
-        let mut v = Vec::new();
-        for i in 0..amount {
-            v.push(i);
-        }
+        // Insert A to [] (between BEGIN and END)
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
 
-        populate_seq(&v, &mut seq, actor);
+        // Insert B to [A] (between BEGIN and A)
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('B', None, Some(a_id.clone()), add_ctx.clone());
+        lseq.apply(op);
 
-        let current_seq = seq.read().val;
-        assert_eq!(current_seq.len(), amount as usize);
+        // Insert C to [B, A] (between B and A)
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[0];
+        let (a_id, _, _) = &seq.val[1];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('C', Some(b_id.clone()), Some(a_id.clone()), add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert D to [B, C, A] (between C and A)
+        let seq = lseq.read();
+        let (c_id, _, _) = &seq.val[1];
+        let (a_id, _, _) = &seq.val[2];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('D', Some(c_id.clone()), Some(a_id.clone()), add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert E to [B, C, D, A] (between B and C)
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[0];
+        let (c_id, _, _) = &seq.val[1];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('E', Some(b_id.clone()), Some(c_id.clone()), add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert F to [B, E, C, D, A] (between D and A)
+        let seq = lseq.read();
+        let (d_id, _, _) = &seq.val[3];
+        let (a_id, _, _) = &seq.val[4];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('F', Some(d_id.clone()), Some(a_id.clone()), add_ctx.clone());
+        lseq.apply(op);
+
+        // Test identifiers and values are in correct order in the sequence [B, E, C, D, F, A]
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 6);
+        let (b_id, b_val, _) = &seq_values[0];
+        let (e_id, e_val, _) = &seq_values[1];
+        let (c_id, c_val, _) = &seq_values[2];
+        let (d_id, d_val, _) = &seq_values[3];
+        let (f_id, f_val, _) = &seq_values[4];
+        let (a_id, a_val, _) = &seq_values[5];
+
+        assert_eq!(*b_id, Identifier::new(&[1]));
+        assert_eq!(*e_id, Identifier::new(&[1, 2]));
+        assert_eq!(*c_id, Identifier::new(&[1, 3]));
+        assert_eq!(*d_id, Identifier::new(&[1, 5]));
+        assert_eq!(*f_id, Identifier::new(&[1, 6]));
+        assert_eq!(*a_id, Identifier::new(&[2]));
+        assert_eq!(*b_val, 'B');
+        assert_eq!(*e_val, 'E');
+        assert_eq!(*c_val, 'C');
+        assert_eq!(*d_val, 'D');
+        assert_eq!(*f_val, 'F');
+        assert_eq!(*a_val, 'A');
     }
 
     #[test]
     #[should_panic]
     fn test_insert_p_greater_than_q() {
-        let mut seq = LSeq::<char, u64>::new(2, 2, LSeqStrategy::Alternate);
+        let mut lseq = LSeq::<char, u64>::new(2, 2, LSeqStrategy::Alternate);
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('A', None, None, add_ctx.clone());
-        seq.apply(op);
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
 
         // Insert B to [A] (between A and END)
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _, _) = &current_seq[0];
+        let seq = lseq.read().val;
+        println!("SEQ [A]: {:?}", seq);
+        assert_eq!(seq.len(), 1);
+        let (a_id, _, _) = &seq[0];
 
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('B', Some(id_of_a.clone()), None, add_ctx.clone());
-        seq.apply(op);
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
 
         // Insert C to [A, B] (between B and A == wrong order)
-        let current_seq = seq.read().val;
-        println!("SEQ [A, B]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 3);
-        let (id_of_a, _, _) = &current_seq[0];
-        let (id_of_b, _, _) = &current_seq[1];
+        let seq = lseq.read().val;
+        println!("SEQ [A, B]: {:?}", seq);
+        assert_eq!(seq.len(), 3);
+        let (a_id, _, _) = &seq[0];
+        let (b_id, _, _) = &seq[1];
 
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'C',
-            Some(id_of_b.clone()),
-            Some(id_of_a.clone()),
-            add_ctx.clone(),
-        );
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('C', Some(b_id.clone()), Some(a_id.clone()), add_ctx.clone());
 
-        seq.apply(op); // should fail
+        lseq.apply(op); // should fail
     }
+
+    // TODO: test new insert finding used identifier (it now fails but it shouldn't)
+    // TODO: test edges, insert between BEGIN and Identifier[1] with Boundary+ strategy (not supported now)
+    // TODO: test edges, insert between Identifier[root-arity - 1] and END with Boundary- strategy (not supported now)
+    // TODO: test delete before insert, and insert between Identifiers which are still unknown to site
 
     #[test]
     #[ignore]
     fn test_insert_nonexisting_id() {
-        let mut seq = LSeq::<char, u64>::default();
+        let mut lseq = LSeq::<char, u64>::default();
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('A', None, None, add_ctx.clone());
-        seq.apply(op);
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
 
         // Insert B to [A] (between BEGIN and <invalid id>)
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
+        let seq = lseq.read().val;
+        println!("SEQ [A]: {:?}", seq);
+        assert_eq!(seq.len(), 1);
 
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('B', None, Some(Identifier::new(&[11])), add_ctx.clone());
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('B', None, Some(Identifier::new(&[11])), add_ctx.clone());
         // should fail? will VClock help us here to know it's just an id we are not aware of yet??
-        seq.apply(op);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_insert_somewhere_strange() {
-        let mut seq = LSeq::<char, u64>::default();
-        let actor = 100;
-
-        // Insert A to [] (between BEGIN and END)
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('A', None, None, add_ctx.clone());
-        seq.apply(op);
-
-        // Insert B to [A] (between BEGIN and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 1);
-        let (id_of_a, _, _) = &current_seq[0];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('B', None, Some(id_of_a.clone()), add_ctx.clone());
-        seq.apply(op);
-
-        // Insert C to [B, A] (between B and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 2);
-        let (id_of_b, _, _) = &current_seq[0];
-        let (id_of_a, _, _) = &current_seq[1];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'C',
-            Some(id_of_b.clone()),
-            Some(id_of_a.clone()),
-            add_ctx.clone(),
-        );
-        seq.apply(op);
-
-        // Insert D to [B, C, A] (between C and A)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, C, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 3);
-        let (id_of_c, _, _) = &current_seq[1];
-        let (id_of_a, _, _) = &current_seq[2];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert(
-            'D',
-            Some(id_of_c.clone()),
-            Some(id_of_a.clone()),
-            add_ctx.clone(),
-        );
-        seq.apply(op);
-
-        // Insert E to [B, C, D, A] (between None and D)
-        let current_seq = seq.read().val;
-        println!("SEQ [B, C, D, A]: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 4);
-        let (id_of_d, _, _) = &current_seq[2];
-
-        let add_ctx = seq.read_ctx().derive_add_ctx(actor);
-        let op = seq.insert('E', None, Some(id_of_d.clone()), add_ctx.clone());
-        seq.apply(op);
-
-        // Test final length
-        let current_seq = seq.read().val;
-        println!("FINAL SEQ: {:?}", current_seq);
-        assert_eq!(current_seq.len(), 5);
+        lseq.apply(op);
     }
 }
