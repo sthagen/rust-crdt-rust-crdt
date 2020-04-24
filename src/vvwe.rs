@@ -194,16 +194,38 @@ mod test {
     fn delete_before_insert() {
         let mut barrier = CausalityBarrier::new();
 
-        let del = CausalMessage {
-            time: 0,
-            local_id: 1,
-            op: Op::Delete(1, 1),
-        };
         let ins = CausalMessage {
-            time: 1,
+            time: 0,
             local_id: 1,
             op: Op::Insert(0),
         };
+
+        let del = CausalMessage {
+            time: 1,
+            local_id: 1,
+            op: Op::Delete(1, 0),
+        };
+
+        assert_eq!(barrier.ingest(ins.clone()), Some(ins));
+        assert_eq!(barrier.ingest(del.clone()), Some(del));
+    }
+
+    #[test]
+    fn out_of_order() {
+        let mut barrier = CausalityBarrier::new();
+
+        let ins = CausalMessage {
+            time: 0,
+            local_id: 1,
+            op: Op::Insert(0),
+        };
+
+        let del = CausalMessage {
+            time: 1,
+            local_id: 1,
+            op: Op::Delete(1, 0),
+        };
+
         assert_eq!(barrier.ingest(del), None);
         assert_eq!(barrier.ingest(ins), None);
     }
