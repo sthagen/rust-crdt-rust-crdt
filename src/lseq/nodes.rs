@@ -82,9 +82,9 @@ impl<V: Ord + Clone + Display, A: Actor + Display> Display for AtomPayload<V, A>
 // We use the op's clock to order payload deterministically
 pub type MiniNodes<V, A> = BTreeMap<VClock<A>, AtomPayload<V, A>>;
 
-/// Each node in the tree can optionall contain a value, or None if the value was deleted.
+/// Each node in the tree can optionally contain a value, or None if the value was deleted.
 /// Each node can also contain (optionally) children.
-/// A node could alternativelly container mini-nodes if there were
+/// A node could alternativelly contain mini-nodes if there were
 /// concurrent insertions with the same Identifier. Refer to the
 /// TreeDoc paper for details about the need and use of mini-nodes in such scenarios
 /// TODO: support mini-nodes to contain trees for insertions between their atoms,

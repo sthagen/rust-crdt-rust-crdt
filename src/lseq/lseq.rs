@@ -116,6 +116,11 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         q: Option<Identifier>,
         ctx: AddCtx<A>,
     ) -> Op<V, A> {
+        // (drusu) aha! I see where we were talking past each other a bit in out discussions, you are deferring allocation to `CmRDT::apply()`!
+        // Instead, we can simply call alloc(p, q) here and package up that identifier with the insert.
+        //
+        // This makes the `apply()` code running on every replica deterministic despite the source of this insert being non-deterministic (you can't really determine user behaviour anyways).
+
         Op::Insert {
             clock: ctx.clock,
             value,
@@ -210,8 +215,15 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         clock: VClock<A>,
         value: V,
     ) {
+        // (drusu) I believe you want to default to the min/max if p or q are not provided.
+        //         the way to do this would be to ban identifiers that end at the extremas of
+        //         the top level, something like this (this doesn't pass the tests, but I'm not sure if it's the tests that are at fault):
+        // let p = p.unwrap_or_else(|| Identifier::new(&[0]));
+        // let q = q.unwrap_or_else(|| Identifier::new(&[self.arity_at(0) - 1]));
         let p = p.unwrap_or_else(|| Identifier::new(&[]));
         let q = q.unwrap_or_else(|| Identifier::new(&[]));
+
+        // (drusu cont.) In this way, the defaults will never be conflict with identifiers that are smaller or bigger than the defaults.
 
         // Let's get the interval between p and q, and also the depth at which
         // we should generate the new identifier
@@ -228,7 +240,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         // new number, based on the depth where it's being added
         let depth_strategy = self.gen_strategy(new_id_depth);
 
-        // Depening on the strategy to apply, let's figure which is the new number
+        // Depending on the strategy to apply, let's figure which is the new number
         let new_number = self.gen_new_number(new_id_depth, depth_strategy, step, &p, &q);
 
         // Let's now attempt to insert the new identifier in the tree at new_id_depth
@@ -239,6 +251,10 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         println!("INCOMING CLOCK: {}", clock);
         match siblings_for_insert.get(&new_number) {
             Some(Atom::Node { payload, children }) => {
+                // (drusu) this feels weird, if we are generating the number here, we should be able to avoid these collisions.
+                //         I think we really need to be generating the full identifier when we generate the Op. Since that's what
+                //         would cause conflicts.
+
                 println!(
                     "Number {} already existing at depth {}",
                     new_number, new_id_depth
@@ -348,10 +364,13 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             } else {
                 // there is no number for q at this depth, thus we use the maximum
                 // possible for this depth (it should be the same as arity of this depth - 1)
+
+                // (drusu) I feel you want to keep the q_position "exclusive" so that taking difference gives you
+                //         a length, ie. don't subtract 1
                 q_position = if prev_q_position > 0 {
-                    (q_position << shift) - 1
+                    (q_position << shift) //  - 1
                 } else {
-                    (q_position << shift) + arity - 1
+                    (q_position << shift) + arity // - 1
                 };
                 prev_q_position = 0;
             }
@@ -360,7 +379,9 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                 // TODO: return error? the trait doesn't support that type of Result currently
                 panic!("p cannot be greater than q");
             } else if q_position > p_position {
-                q_position - p_position - 1
+                // (drusu) I'm having a hard time wraping my head around this
+                //         subtraction, is it valid to subtract these "paths"?
+                q_position - p_position
             } else {
                 // p and q positions are equal
                 0
@@ -390,19 +411,20 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         p: &Identifier,
         q: &Identifier,
     ) -> u64 {
-        // Depening on the strategy to apply, let's figure which is the reference number
+        // Depending on the strategy to apply, let's figure which is the reference number
         // we'll be adding to, or substracting from, to obtain the new number
         if strategy {
             // We then apply boundary+ strategy from p
             let reference_num = if depth < p.len() {
-                p.at(depth)
+                p.at(depth) + 1 // (drusu): We need to shift over from p here to avoid conflicts,
             } else {
                 BEGIN_ID
             };
 
             // TODO: we may need a seed provided by the user to we get a deterministic result
             //let n = thread_rng().gen_range(reference_num + 1, reference_num + step + 1);
-            let n = reference_num + (step / 2) + 1;
+            // (drusu): No need to shift over by 1 from BEGIN since BEGIN at the next level is smaller than this BEGIN
+            let n = reference_num + (step / 2); // + 1;
             println!("boundary+ (step {}): {}", step, n);
             n
         } else {
@@ -415,7 +437,9 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 
             // TODO: we may need a seed provided by the user to we get a deterministic result
             //let n = thread_rng().gen_range(reference_num - step, reference_num);
-            let n = reference_num - (step / 2) - 1;
+            // (drusu): no need to subtract here, we can always create larger numbers by adding a level,
+            //          so there's no need to shy away from hitting the max arity at this level
+            let n = reference_num - (step / 2); //  - 1;
             println!("boundary- (step {}): {}", step, n);
             n
         }
@@ -631,7 +655,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         prefix: Identifier,
         seq: &mut Vec<(Identifier, V, VClock<A>)>,
     ) {
-        // We return all miin-nodes here with the same Identifier,
+        // We return all mini-nodes here with the same Identifier,
         // this is ok for now as we don't support inserting between them.
         for (_, AtomPayload { clock, value }) in atom_value.iter() {
             if let Some(val) = value {
@@ -1019,10 +1043,10 @@ mod test {
         let (d_id, d_val, _) = &seq1_values[2];
         let (c_id, c_val, _) = &seq1_values[3];
 
-        assert_eq!(*a_id, Identifier::new(&[1]));
-        assert_eq!(*b_id, Identifier::new(&[1]));
-        assert_eq!(*d_id, Identifier::new(&[1, 1]));
-        assert_eq!(*c_id, Identifier::new(&[2]));
+        assert_eq!(*a_id, Identifier::new(&[0]));
+        assert_eq!(*b_id, Identifier::new(&[0]));
+        assert_eq!(*d_id, Identifier::new(&[0, 0]));
+        assert_eq!(*c_id, Identifier::new(&[1]));
         assert_eq!(*a_val, 'A');
         assert_eq!(*b_val, 'B');
         assert_eq!(*d_val, 'D');
