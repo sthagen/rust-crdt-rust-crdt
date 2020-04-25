@@ -1,8 +1,38 @@
-use crdts::lseq::ident::*;
-use crdts::lseq::*;
+use crdts::lseq::{LSeq, Op, SiteId};
 use crdts::CmRDT;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
+
+#[derive(Debug, Clone)]
+struct OperationList(pub Vec<Op<char, SiteId>>);
+
+use quickcheck::{Arbitrary, Gen, TestResult};
+
+impl Arbitrary for OperationList {
+    fn arbitrary<G: Gen>(g: &mut G) -> OperationList {
+        let size = {
+            let s = g.size();
+            if s == 0 {
+                0
+            } else {
+                g.gen_range(0, s)
+            }
+        };
+
+        let mut site1 = LSeq::new(SiteId::new(g.gen()));
+        let ops = (0..size)
+            .filter_map(|_| {
+                if g.gen() || site1.len() == 0 {
+                    site1.delete_index(g.gen_range(0, site1.len() + 1))
+                } else {
+                    site1.delete_index(g.gen_range(0, site1.len()))
+                }
+            })
+            .collect();
+        OperationList(ops)
+    }
+    // implement shrinking ://
+}
 
 #[test]
 fn test_new() {
@@ -42,37 +72,20 @@ fn test_delete_of_index() {
 }
 
 #[test]
-fn test_inserts() {
-    // A simple smoke test to ensureethat insertions work properly.
-    // Uses two sites which randomly insert a character and then immediately insert it into the
-    // other site.
-    let mut rng = rand::thread_rng();
+fn test_worst_case_inserts() {
+    // by inserting always at the middle of the array, we grow the exponential tree beyond the
+    // max depth very quickly. This is not looking too good, we need to tune some params.
 
-    let mut s1 = rng.sample_iter(Alphanumeric);
-    let mut s2 = rng.sample_iter(Alphanumeric);
+    let mut site = LSeq::new(SiteId::new(0));
+    // let mut site2 = LSeq::new(SiteId::new(1));
 
-    let mut site1 = LSeq::new(SiteId::new(0));
-    let mut site2 = LSeq::new(SiteId::new(1));
-
-    for _ in 0..5000 {
-        if rng.gen() {
-            let op = site1.insert_index(
-                rng.gen_range(0, site1.raw_entries().len() + 1),
-                s1.next().unwrap(),
-            );
-            site2.apply(op);
-        } else {
-            let op = site2.insert_index(
-                rng.gen_range(0, site2.raw_entries().len() + 1),
-                s2.next().unwrap(),
-            );
-            site1.apply(op);
-        }
+    let n = 86; // maximum reliable number of inserts we can do in this worst case example
+    for _ in 0..n {
+        let i = site.len() / 2;
+        println!("inserting {}/{}", i, site.len());
+        site.insert_index(i, 'a');
     }
-    assert_eq!(
-        site1.iter().collect::<String>(),
-        site2.iter().collect::<String>()
-    );
+    assert_eq!(site.len(), n);
 }
 
 #[test]
@@ -86,7 +99,7 @@ fn test_insert_followed_by_deletes() {
 
     for _ in 0..5000 {
         let c = s1.next().unwrap();
-        let ix = rng.gen_range(0, site1.raw_entries().len() + 1);
+        let ix = rng.gen_range(0, site1.len() + 1);
         let insert_op = site1.insert_index(ix, c);
         site2.apply(insert_op);
 
@@ -109,38 +122,56 @@ fn test_insert_followed_by_deletes() {
     );
 }
 
-#[derive(Debug, Clone)]
-struct OperationList(pub Vec<Op<char, SiteId>>);
+#[test]
+fn test_mutual_insert_qc1() {
+    let mut site0 = LSeq::new(SiteId::new(0));
+    let mut site1 = LSeq::new(SiteId::new(1));
+    let plan = vec![
+        (8, 24, false),
+        (23, 1, true),
+        (93, 94, false),
+        (68, 30, false),
+        (37, 27, true),
+    ];
 
-use quickcheck::{Arbitrary, Gen, TestResult};
-
-impl Arbitrary for OperationList {
-    fn arbitrary<G: Gen>(g: &mut G) -> OperationList {
-        let size = {
-            let s = g.size();
-            if s == 0 {
-                0
-            } else {
-                g.gen_range(0, s)
-            }
+    for (elem, idx, source_is_site0) in plan {
+        let (source, replica) = if source_is_site0 {
+            (&mut site0, &mut site1)
+        } else {
+            (&mut site1, &mut site0)
         };
-
-        let mut site1 = LSeq::new(SiteId::new(g.gen()));
-        let ops = (0..size)
-            .filter_map(|_| {
-                if g.gen() || site1.len() == 0 {
-                    site1.delete_index(g.gen_range(0, site1.len() + 1))
-                } else {
-                    site1.delete_index(g.gen_range(0, site1.len()))
-                }
-            })
-            .collect();
-        OperationList(ops)
+        let i = idx % (source.len() + 1);
+        println!("{:?} inserting {} @ {}", source.actor(), elem, i);
+        let op = source.insert_index(i, elem);
+        replica.apply(op);
     }
-    // implement shrinking ://
+
+    assert_eq!(
+        site0.iter().collect::<Vec<_>>(),
+        site1.iter().collect::<Vec<_>>()
+    );
 }
 
 quickcheck! {
+    fn prop_mutual_inserting(plan: Vec<(u8, usize, bool)>) -> bool {
+        let mut site0 = LSeq::new(SiteId::new(0));
+        let mut site1 = LSeq::new(SiteId::new(1));
+        for (elem, idx, source_is_site0) in plan {
+            let (source, replica) = if source_is_site0 {
+                (&mut site0, &mut site1)
+            } else {
+                (&mut site1, &mut site0)
+            };
+            let i = idx % (source.len() + 1);
+            let op = source.insert_index(i, elem);
+            replica.apply(op);
+
+        }
+
+        assert_eq!(site0.iter().collect::<Vec<_>>(), site1.iter().collect::<Vec<_>>());
+        true
+    }
+
     fn prop_inserts_and_deletes(op1: OperationList, op2: OperationList) -> TestResult {
         let mut rng = quickcheck::StdThreadGen::new(1000);
         let mut op1 = op1.0.into_iter();

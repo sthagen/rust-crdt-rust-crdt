@@ -3,6 +3,7 @@ use bitvec::vec::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+// TODO: This boundary is way too strict, especially for very deeply nested trees. the boundary should grow exponentially with the tree
 const BOUNDARY: u64 = 10;
 
 const INITIAL_BASE: u32 = 3; // start with 2^8
@@ -15,20 +16,6 @@ const INITIAL_BASE: u32 = 3; // start with 2^8
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Serialize, Deserialize, Hash)]
 pub struct Identifier<A: Actor> {
     path: Vec<(u64, Option<A>)>,
-    // site_id: u64,
-    // counter: u64
-}
-
-impl<A: Actor> Identifier<A> {
-    /// Get the size of an identifier.
-    pub fn len(&self) -> usize {
-        self.path.len()
-    }
-
-    /// Check if the identifier is empty.
-    pub fn is_empty(&self) -> bool {
-        self.path.is_empty()
-    }
 }
 
 /// A generator for fresh identifiers.
@@ -45,7 +32,6 @@ pub struct IdentGen<A: Actor> {
     strategy_vec: BitVec,
     /// Site id of this tree
     pub site_id: A,
-    // clock: u64
 }
 
 impl<A: Actor> IdentGen<A> {
@@ -73,7 +59,7 @@ impl<A: Actor> IdentGen<A> {
     /// The absolute largest possible node.
     pub fn upper(&self) -> Identifier<A> {
         Identifier {
-            path: vec![(2u64.pow(self.initial_base_bits) - 1, None)],
+            path: vec![(self.width_at(0), None)],
         }
     }
 
@@ -94,8 +80,10 @@ impl<A: Actor> IdentGen<A> {
     pub fn alloc(&mut self, p: &Identifier<A>, q: &Identifier<A>) -> Identifier<A> {
         assert!(p != q, "allocation range should be non-empty");
         if q < p {
-            self.alloc(q, p);
+            return self.alloc(q, p);
         }
+
+        assert!(p < q);
 
         let mut depth = 0;
 
@@ -134,8 +122,8 @@ impl<A: Actor> IdentGen<A> {
                 // The two paths are fully equal which means that the site_ids MUST be different or
                 // we are in an invalid situation
                 (None, None) => {
-                    let max_for_depth = self.width_at(depth as u32) - 1;
-                    let next_index = self.index_in_range(1, max_for_depth, depth as u32);
+                    let next_index =
+                        self.index_in_range(1, self.width_at(depth as u32), depth as u32);
                     return self.push_index(p, next_index);
                 }
             };
@@ -144,7 +132,7 @@ impl<A: Actor> IdentGen<A> {
     }
 
     // Here we have the lowest possible upper bound and we just need to traverse the lower bound
-    // until we can find somehwere to insert a new identifier.
+    // until we can find somewhere to insert a new identifier.
     //
     // This reflects the case where we want to allocate between 0.20001 and 0.3
     fn alloc_from_lower(&mut self, p: &Identifier<A>, mut depth: usize) -> Identifier<A> {
@@ -155,10 +143,14 @@ impl<A: Actor> IdentGen<A> {
                         let next_index =
                             self.index_in_range(ix + 1, self.width_at(depth as u32), depth as u32);
                         return self.replace_last(p, depth, next_index);
+                    } else {
+                        // Not enough room at this level, continue to the next depth
                     }
                 }
                 None => {
-                    let next_index = self.index_in_range(1, self.width_at(depth as u32), depth as u32);
+                    // TODO: this is the same branch as the (None, None) case above, see about factoring these out
+                    let next_index =
+                        self.index_in_range(1, self.width_at(depth as u32), depth as u32);
                     return self.push_index(p, next_index);
                 }
             }
@@ -191,10 +183,15 @@ impl<A: Actor> IdentGen<A> {
         // anything on the next level, otherwise use the upper bound we've found.
         let upper = match q.path.get(depth) {
             Some(b) => b.0,
-            None => self.width_at(depth as u32 + 1),
+            None => self.width_at(depth as u32),
         };
+
         let next_index = self.index_in_range(1, upper, depth as u32);
-        self.push_index(&ident, next_index)
+
+        let z = self.push_index(&ident, next_index);
+        assert!(base < &z);
+        assert!(&z < q);
+        z
     }
 
     fn replace_last(&mut self, p: &Identifier<A>, depth: usize, ix: u64) -> Identifier<A> {
@@ -211,7 +208,10 @@ impl<A: Actor> IdentGen<A> {
     }
 
     fn width_at(&self, depth: u32) -> u64 {
-        assert!(self.initial_base_bits + depth  < 31, "maximum depth exceeded");
+        assert!(
+            self.initial_base_bits + depth < 31,
+            "maximum depth exceeded"
+        );
 
         2u64.pow(self.initial_base_bits + depth)
     }
@@ -228,19 +228,26 @@ impl<A: Actor> IdentGen<A> {
         );
 
         let mut rng = rand::rngs::OsRng;
-        let interval = BOUNDARY.min(upper - 1 - lower);
+        let interval = std::cmp::min(BOUNDARY, upper - lower);
+
         let step = if interval > 0 {
             rng.gen_range(0, interval)
         } else {
             0
         };
-        if self.strategy(depth) {
+
+        let index = if self.strategy(depth) {
             //boundary+
             lower + step
         } else {
             //boundary-
             upper - step - 1
-        }
+        };
+
+        assert!(lower <= index);
+        assert!(index < upper);
+
+        index
     }
 
     fn strategy(&mut self, depth: u32) -> bool {
@@ -255,11 +262,36 @@ impl<A: Actor> IdentGen<A> {
     }
 }
 
-#[cfg(test)]
 impl<A: quickcheck::Arbitrary + Actor> quickcheck::Arbitrary for Identifier<A> {
     fn arbitrary<G: quickcheck::Gen>(g: &mut G) -> Identifier<A> {
-        Identifier {
-            path: Vec::<(u64, Option<A>)>::arbitrary(g),
+        let max_depth = 27; // TODO: where does this come from?
+        let min_depth = 1;
+        let chosen_depth = u32::arbitrary(g) % (max_depth - min_depth) + min_depth;
+        let mut path = Vec::new();
+        for depth in 0..chosen_depth {
+            let i = u64::arbitrary(g) % (2u64.pow(INITIAL_BASE + depth) + 1);
+            path.push((i, Option::arbitrary(g)));
+        }
+
+        // our last entry can not use 0 as an index since this will not allow us to insert
+        // anything before this identifier
+        if path.last().unwrap().0 == 0 {
+            path.pop();
+            let i = 1 + u64::arbitrary(g) % 2u64.pow(INITIAL_BASE + chosen_depth);
+            assert_ne!(i, 0);
+            path.push((i, Option::arbitrary(g)));
+        };
+
+        Self { path }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        if self.path.len() == 1 {
+            Box::new(std::iter::empty())
+        } else {
+            let mut path = self.path.clone();
+            path.pop();
+            Box::new(std::iter::once(Self { path }))
         }
     }
 }
@@ -267,27 +299,18 @@ impl<A: quickcheck::Arbitrary + Actor> quickcheck::Arbitrary for Identifier<A> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
-
-    fn valid_identifier(id: &Identifier<u32>) -> bool {
-        let mut d = 0;
-        if id.path.len() == 0 || id.len() > 27 { return false }
-        for (p, _) in id.path.iter() {
-            if p > &2u64.pow(3 + d) { return false }
-            d += 1;
-        }
-        true
-    }
+    use quickcheck::{quickcheck, TestResult};
 
     quickcheck! {
         fn prop_alloc(p: Identifier<u32>, q: Identifier<u32>) -> TestResult {
-            if ! valid_identifier(&p) || ! valid_identifier(&q) {
+            if p == q {
                 return TestResult::discard();
             }
+
             let mut gen = IdentGen::new(0);
             let z = gen.alloc(&p, &q);
 
-            TestResult::from_bool( (p < z && z < q) || (q < z && z < p))
+            TestResult::from_bool((p < z && z < q) || (q < z && z < p))
         }
     }
 
@@ -405,5 +428,25 @@ mod test {
     fn test_index_in_range() {
         let mut gen = IdentGen::new(0);
         assert_eq!(gen.index_in_range(0, 1, 1), 0);
+    }
+
+    #[test]
+    fn test_alloc_between_conflicting_ids() {
+        let mut gen = IdentGen::new(0);
+
+        let a = Identifier {
+            path: vec![(0, Some(1))],
+        };
+
+        let b = Identifier {
+            path: vec![(0, Some(2))],
+        };
+
+        assert!(a < b);
+
+        let z = gen.alloc(&a, &b);
+        assert!(a < z);
+        assert!(z < b);
+        assert_eq!(&z.path[0..1], a.path.as_slice());
     }
 }

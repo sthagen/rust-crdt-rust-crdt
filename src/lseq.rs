@@ -39,12 +39,10 @@
 /// Contains the implementation of the exponential tree for LSeq
 pub mod ident;
 
-use ident::*;
+use ident::{IdentGen, Identifier};
 use serde::{Deserialize, Serialize};
 
-use crate::traits::CmRDT;
-
-use crate::{Dot, Actor};
+use crate::{Actor, CmRDT, Dot};
 
 // SiteId can be generalized to any A if there is a way to generate a single invalid actor id at every site
 // Currently we rely on every site using the Id 0 for that purpose.
@@ -71,7 +69,7 @@ impl Default for SiteId {
 pub struct Entry<T, A: Actor> {
     /// The identifier of the entry.
     pub id: Identifier<A>,
-    /// The site id of the entry.
+    /// The site id that inserted this entry.
     pub dot: Dot<A>,
     /// The element for the entry.
     pub c: T,
@@ -114,29 +112,14 @@ pub enum Op<T, A: Actor> {
     },
 }
 
-impl<T, A: Actor> LSeq<T, A> {
-    /// Create an LSEQ for the empty string
+impl<T: Clone, A: Actor> LSeq<T, A> {
+    /// Create an empty LSEQ
     pub fn new(id: A) -> Self {
+        // TODO: LSeq should not take an ID
         LSeq {
             seq: Vec::new(),
             gen: IdentGen::new(id.clone()),
             dot: Dot::new(id, 0),
-        }
-    }
-
-    /// Insert an identifier and value in the LSEQ
-    pub fn insert(&mut self, ix: Identifier<A>, dot: Dot<A>, c: T) {
-        // Inserts only have an impact if the identifier is in the tree
-        if let Err(res) = self.seq.binary_search_by(|e| e.id.cmp(&ix)) {
-            self.seq.insert(res, Entry { id: ix, dot, c });
-        }
-    }
-
-    /// Remove an identifier from the LSEQ
-    pub fn delete(&mut self, ix: Identifier<A>) {
-        // Deletes only have an effect if the identifier is already in the tree
-        if let Ok(i) = self.seq.binary_search_by(|e| e.id.cmp(&ix)) {
-            self.seq.remove(i);
         }
     }
 
@@ -146,45 +129,38 @@ impl<T, A: Actor> LSeq<T, A> {
     /// # Panics
     ///
     /// * If the allocation of a new index was not between `ix` and `ix - 1`.
-    pub fn insert_index(&mut self, ix: usize, c: T) -> Op<T, A>
-    where
-        T: Clone,
-    {
-        let lower = self.gen.lower();
-        let upper = self.gen.upper();
+    pub fn insert_index(&mut self, ix: usize, c: T) -> Op<T, A> {
+        let min_id = self.gen.lower();
+        let max_id = self.gen.upper();
 
         // If we're inserting past the length of the LSEQ then it's the same as appending.
-        let ix_ident = if self.seq.len() <= ix {
-            let prev = self
-                .seq
-                .last()
-                .map(|Entry { id, .. }| id)
-                .unwrap_or_else(|| &lower);
-            self.gen.alloc(prev, &upper)
+        let (lower_id, upper_id) = if self.seq.len() <= ix {
+            let prev = self.seq.last().map(|entry| &entry.id).unwrap_or(&min_id);
+            (prev, &max_id)
         } else {
             // To insert an element at position ix, we want it to appear in the sequence between
-            // ix - 1 and ix. To do this, retreive each bound defaulting to the lower and upper
+            // ix - 1 and ix. To do this, retrieve each bound defaulting to the lower and upper
             // bounds respectively if they are not found.
             let prev = match ix.checked_sub(1) {
-                Some(i) => &self.seq.get(i).unwrap().id,
-                None => &lower,
+                Some(i) => &self.seq[i].id,
+                None => &min_id,
             };
-            let next = self
-                .seq
-                .get(ix)
-                .map(|Entry { id, .. }| id)
-                .unwrap_or(&upper);
-            let a = self.gen.alloc(&prev, next);
+            let next = self.seq.get(ix).map(|entry| &entry.id).unwrap_or(&max_id);
 
-            assert!(prev < &a);
-            assert!(&a < next);
-            a
+            (prev, next)
         };
+
+        let ix_ident = self.gen.alloc(&lower_id, &upper_id);
+
+        assert!(lower_id < &ix_ident);
+        assert!(&ix_ident < upper_id);
+
         let op = Op::Insert {
             id: ix_ident,
             dot: self.dot.clone(),
             c,
         };
+        // TODO: refactor to follow the library API (don't apply ops immediately)
         self.dot.counter += 1;
         self.apply(op.clone());
         op
@@ -194,10 +170,7 @@ impl<T, A: Actor> LSeq<T, A> {
     ///
     /// If `ix` is out of bounds, i.e. `ix > self.len()`, then
     /// the `Op` is not performed and `None` is returned.
-    pub fn delete_index(&mut self, ix: usize) -> Option<Op<T, A>>
-    where
-        T: Clone,
-    {
+    pub fn delete_index(&mut self, ix: usize) -> Option<Op<T, A>> {
         if ix >= self.seq.len() {
             return None;
         }
@@ -218,10 +191,7 @@ impl<T, A: Actor> LSeq<T, A> {
 
     /// Perform a local deletion at `ix`. If `ix` is out of bounds
     /// then the last element will be deleted, i.e. `self.len() - 1`.
-    pub fn delete_index_or_last(&mut self, ix: usize) -> Op<T, A>
-    where
-        T: Clone,
-    {
+    pub fn delete_index_or_last(&mut self, ix: usize) -> Op<T, A> {
         match self.delete_index(ix) {
             None => self
                 .delete_index(self.len() - 1)
@@ -245,13 +215,29 @@ impl<T, A: Actor> LSeq<T, A> {
         self.seq.iter().map(|Entry { c, .. }| c)
     }
 
-    /// Access the internal representation of the LSEQ
-    pub fn raw_entries(&self) -> &Vec<Entry<T, A>> {
-        &self.seq
+    /// Actor who is initiating operations on this LSeq
+    pub fn actor(&self) -> A {
+        self.dot.actor.clone()
+    }
+
+    /// Insert an identifier and value in the LSEQ
+    fn insert(&mut self, ix: Identifier<A>, dot: Dot<A>, c: T) {
+        // Inserts only have an impact if the identifier is not in the tree
+        if let Err(res) = self.seq.binary_search_by(|e| e.id.cmp(&ix)) {
+            self.seq.insert(res, Entry { id: ix, dot, c });
+        }
+    }
+
+    /// Remove an identifier from the LSEQ
+    fn delete(&mut self, ix: Identifier<A>) {
+        // Deletes only have an effect if the identifier is already in the tree
+        if let Ok(i) = self.seq.binary_search_by(|e| e.id.cmp(&ix)) {
+            self.seq.remove(i);
+        }
     }
 }
 
-impl<T, A: Actor> CmRDT for LSeq<T, A> {
+impl<T: Clone, A: Actor> CmRDT for LSeq<T, A> {
     type Op = Op<T, A>;
     /// Apply an operation to an LSeq instance.
     ///
