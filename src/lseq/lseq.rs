@@ -645,42 +645,49 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
 mod test {
     use super::*;
 
+    // helper to insert between two elements given their index in the sequence
+    fn insert_between_i_j<V: Ord + Clone + Display, A: Actor + Display>(
+        lseq: &mut LSeq<V, A>,
+        i: Option<usize>,
+        j: Option<usize>,
+        value: V,
+        actor: A,
+    ) {
+        let seq = lseq.read();
+        let i_id = i.map(|index| seq.val[index].0.clone());
+        let j_id = j.map(|index| seq.val[index].0.clone());
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert(value, i_id, j_id, add_ctx.clone());
+        lseq.apply(op);
+    }
+
+    // helper to delete an element given its index in the sequence
+    fn delete_index<V: Ord + Clone + Display, A: Actor + Display>(
+        lseq: &mut LSeq<V, A>,
+        index: usize,
+    ) {
+        let seq = lseq.read();
+        let rm_ctx = seq.derive_rm_ctx();
+        let id = &seq.val[index].0;
+        lseq.apply(lseq.delete(id.clone(), rm_ctx.clone()));
+    }
+
     #[test]
     fn test_append() {
         let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
         let actor = 100;
 
         // Append A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Append B to [A] (between A and END)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(0), None, 'B', actor);
 
         // Append C to [A, B] (between B and END)
-        let seq = lseq.read();
-        println!("SEQ [A, B]: {:?}", seq.val);
-        assert_eq!(seq.val.len(), 2);
-        let (b_id, _, _) = &seq.val[1];
-
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(1), None, 'C', actor);
 
         // Append D to [A, B, C] (between C and END)
-        let seq = lseq.read();
-        println!("SEQ [A, B, C]: {:?}", seq.val);
-        assert_eq!(seq.val.len(), 3);
-        let (c_id, _, _) = &seq.val[2];
-
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('D', Some(c_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(2), None, 'D', actor);
 
         // Test identifiers and values
         let seq_values = lseq.read().val;
@@ -709,30 +716,16 @@ mod test {
         let actor = 100;
 
         // Append A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Append B to [A] (between A and END)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(0), None, 'B', actor);
 
         // Append C to [A, B] (between B and END)
-        let seq = lseq.read();
-        println!("SEQ [A, B]: {:?}", seq.val);
-        assert_eq!(seq.val.len(), 2);
-        let (b_id, _, _) = &seq.val[1];
-
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(1), None, 'C', actor);
 
         // Delete B from [A, B, C]
-        let rm_ctx = lseq.read_ctx().derive_rm_ctx();
-        lseq.apply(lseq.delete(b_id.clone(), rm_ctx.clone()));
+        delete_index(&mut lseq, 1);
 
         // Test identifiers and values
         let seq_values = lseq.read().val;
@@ -791,32 +784,17 @@ mod test {
         let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
         let actor = 100;
 
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-
         // insert A to [] (between BEGIN and END)
-        let op_actor = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // insert B to [A] (between A and END)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op_actor = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, Some(0), None, 'B', actor);
 
         // insert C to [A, B] (between A and B)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[1];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op_actor = lseq.insert('C', Some(a_id.clone()), Some(b_id.clone()), add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, Some(0), Some(1), 'C', actor);
 
         // insert D to [A, C, B] (between C and B)
-        let seq = lseq.read();
-        let (c_id, _, _) = &seq.val[1];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op_actor = lseq.insert('D', Some(c_id.clone()), Some(b_id.clone()), add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, Some(1), Some(2), 'D', actor);
 
         // Test identifiers and values are in correct order in the sequence
         let seq_values = lseq.read().val;
@@ -844,32 +822,17 @@ mod test {
         let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
         let actor = 100;
 
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-
         // insert A to [] (between BEGIN and END)
-        let op_actor = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // insert B to [A] (between A and END)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op_actor = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, Some(0), None, 'B', actor);
 
         // insert C to [A, B] (between B and END)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[1];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op_actor = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, Some(1), None, 'C', actor);
 
         // insert D to [A, B, C] (between A and C)
-        let seq = lseq.read();
-        let (c_id, _, _) = &seq.val[2];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op_actor = lseq.insert('D', Some(a_id.clone()), Some(c_id.clone()), add_ctx.clone());
-        lseq.apply(op_actor);
+        insert_between_i_j(&mut lseq, Some(0), Some(2), 'D', actor);
 
         // Test identifiers and values are in correct order in the sequence
         let seq_values = lseq.read().val;
@@ -898,23 +861,13 @@ mod test {
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Insert B to [A] (between BEGIN and A)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('B', None, Some(a_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, Some(0), 'B', actor);
 
         // Insert C to [B, A] (between BEGIN and B)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('C', None, Some(b_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, Some(0), 'C', actor);
 
         // Test identifiers and values are in correct order in the sequence
         let seq_values = lseq.read().val;
@@ -941,23 +894,13 @@ mod test {
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Insert B to [A] (between BEGIN and A)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('B', None, Some(a_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, Some(0), 'B', actor);
 
         // Insert C to [B, A] (between BEGIN and B)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('C', None, Some(b_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, Some(0), 'C', actor);
 
         // Test identifiers and values are in correct order in the sequence
         let seq_values = lseq.read().val;
@@ -987,23 +930,13 @@ mod test {
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Insert B to [A] (between A and END)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(0), None, 'B', actor);
 
         // Insert C to [A, B] (between B and END)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[1];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(1), None, 'C', actor);
 
         // Test identifiers and values are in correct order in the sequence
         let seq_values = lseq.read().val;
@@ -1102,48 +1035,22 @@ mod test {
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Insert B to [A] (between BEGIN and A)
-        let seq = lseq.read();
-        let (a_id, _, _) = &seq.val[0];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('B', None, Some(a_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, Some(0), 'B', actor);
 
         // Insert C to [B, A] (between B and A)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[0];
-        let (a_id, _, _) = &seq.val[1];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('C', Some(b_id.clone()), Some(a_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(0), Some(1), 'C', actor);
 
         // Insert D to [B, C, A] (between C and A)
-        let seq = lseq.read();
-        let (c_id, _, _) = &seq.val[1];
-        let (a_id, _, _) = &seq.val[2];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('D', Some(c_id.clone()), Some(a_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(1), Some(2), 'D', actor);
 
         // Insert E to [B, C, D, A] (between B and C)
-        let seq = lseq.read();
-        let (b_id, _, _) = &seq.val[0];
-        let (c_id, _, _) = &seq.val[1];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('E', Some(b_id.clone()), Some(c_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(0), Some(1), 'E', actor);
 
         // Insert F to [B, E, C, D, A] (between D and A)
-        let seq = lseq.read();
-        let (d_id, _, _) = &seq.val[3];
-        let (a_id, _, _) = &seq.val[4];
-        let add_ctx = seq.derive_add_ctx(actor);
-        let op = lseq.insert('F', Some(d_id.clone()), Some(a_id.clone()), add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(3), Some(4), 'F', actor);
 
         // Test identifiers and values are in correct order in the sequence [B, E, C, D, F, A]
         let seq_values = lseq.read().val;
@@ -1177,31 +1084,13 @@ mod test {
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Insert B to [A] (between A and END)
-        let seq = lseq.read().val;
-        println!("SEQ [A]: {:?}", seq);
-        assert_eq!(seq.len(), 1);
-        let (a_id, _, _) = &seq[0];
-
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, Some(0), None, 'B', actor);
 
         // Insert C to [A, B] (between B and A == wrong order)
-        let seq = lseq.read().val;
-        println!("SEQ [A, B]: {:?}", seq);
-        assert_eq!(seq.len(), 3);
-        let (a_id, _, _) = &seq[0];
-        let (b_id, _, _) = &seq[1];
-
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('C', Some(b_id.clone()), Some(a_id.clone()), add_ctx.clone());
-
-        lseq.apply(op); // should fail
+        insert_between_i_j(&mut lseq, Some(1), Some(0), 'C', actor); // should panic
     }
 
     // TODO: test new insert finding used identifier (it now fails but it shouldn't)
@@ -1214,9 +1103,7 @@ mod test {
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
-        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
-        let op = lseq.insert('A', None, None, add_ctx.clone());
-        lseq.apply(op);
+        insert_between_i_j(&mut lseq, None, None, 'A', actor);
 
         // Insert B to [A] (between BEGIN and <invalid id>)
         let seq = lseq.read().val;
