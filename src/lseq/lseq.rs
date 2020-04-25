@@ -10,7 +10,7 @@ use std::{
 };
 
 const DEFAULT_STRATEGY_BOUNDARY: u8 = 10;
-const DEFAULT_STRATEGY: LSeqStrategy = LSeqStrategy::Random;
+const DEFAULT_STRATEGY: LSeqStrategy = LSeqStrategy::Alternate;
 const DEFAULT_ROOT_BASE: u64 = 32; // This needs to be greater than boundary, and conveniently needs to be a power of 2
 const BEGIN_ID: u64 = 0;
 
@@ -102,7 +102,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             boundary,
             root_arity,
             strategy,
-            strategies: vec![true], // boundary+ strategy for depth 0
+            strategies: vec![],
             siblings: SiblingsNodes::default(),
             clock: VClock::default(),
         }
@@ -210,13 +210,16 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         clock: VClock<A>,
         value: V,
     ) {
-        let p = p.unwrap_or_else(|| Identifier::new(&[BEGIN_ID]));
+        let p = p.unwrap_or_else(|| Identifier::new(&[]));
         let q = q.unwrap_or_else(|| Identifier::new(&[]));
 
         // Let's get the interval between p and q, and also the depth at which
         // we should generate the new identifier
         let (new_id_depth, interval) = self.find_new_id_depth(&p, &q);
-        println!("INTERVAL FOUND: {}", interval);
+        println!(
+            "INTERVAL FOUND: {} (new id depth: {})",
+            interval, new_id_depth
+        );
 
         // Let's make sure we allocate the new number within the preset boundary and interval obtained
         let step = cmp::min(interval, self.boundary as u64);
@@ -234,7 +237,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
         // We now need to insert the new number in the siblings we just looked up
         println!("New number {} for depth {}", new_number, new_id_depth);
         println!("INCOMING CLOCK: {}", clock);
-        match siblings_for_insert.get_mut(&new_number) {
+        match siblings_for_insert.get(&new_number) {
             Some(Atom::Node { payload, children }) => {
                 println!(
                     "Number {} already existing at depth {}",
@@ -313,11 +316,8 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     fn find_new_id_depth(&self, p: &Identifier, q: &Identifier) -> (usize, u64) {
         let mut interval: u64;
         let mut p_position = 0;
-        let mut q_position = if q.is_empty() {
-            1 // this will cause we get arity -1 as value of q for very first level
-        } else {
-            0 // this will allow us to simply use the value from q[0]
-        };
+        let mut q_position = 0;
+        let mut prev_q_position = 0;
         let mut new_id_depth = 0;
 
         loop {
@@ -343,13 +343,18 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             // Calculate what would be the position in the sequence of q at current depth
             if new_id_depth < q.len() {
                 let i = q.at(new_id_depth);
+                prev_q_position = i;
                 q_position = (q_position << shift) + i;
             } else {
                 // there is no number for q at this depth, thus we use the maximum
                 // possible for this depth (it should be the same as arity of this depth - 1)
-                q_position = (q_position << shift) - 1;
+                q_position = if prev_q_position > 0 {
+                    (q_position << shift) - 1
+                } else {
+                    (q_position << shift) + arity - 1
+                };
+                prev_q_position = 0;
             }
-
             // What's the interval between p and q identifiers at current depth?
             interval = if p_position > q_position {
                 // TODO: return error? the trait doesn't support that type of Result currently
@@ -398,7 +403,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             // TODO: we may need a seed provided by the user to we get a deterministic result
             //let n = thread_rng().gen_range(reference_num + 1, reference_num + step + 1);
             let n = reference_num + (step / 2) + 1;
-            println!("STEP boundary+ (step {}): {}", step, n);
+            println!("boundary+ (step {}): {}", step, n);
             n
         } else {
             // ...ok, then apply boundary- strategy from q
@@ -411,7 +416,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
             // TODO: we may need a seed provided by the user to we get a deterministic result
             //let n = thread_rng().gen_range(reference_num - step, reference_num);
             let n = reference_num - (step / 2) - 1;
-            println!("STEP boundary- (step {}): {}", step, n);
+            println!("boundary- (step {}): {}", step, n);
             n
         }
     }
@@ -426,28 +431,39 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
     ) -> &mut SiblingsNodes<V, A> {
         // Let's now attempt to insert the new identifier in the tree at new_id_depth
         let mut cur_depth_nodes = &mut self.siblings;
-        for d in 0..depth {
+        for cur_depth in 0..depth {
             // This is not yet the depth where to add the new number,
             // therefore we just check which child is the path of p/q at current's depth
             let cur_number = if strategy {
                 // if strategy is boundary+ but p is BEGIN at this depth
                 // we then will have to use q path
-                if d < p.len() {
-                    p.at(d)
+                if cur_depth < p.len() {
+                    p.at(cur_depth)
                 } else {
-                    // TODO: this fallback doesn't work, we may need to create mini-nodes
-                    q.at(d)
+                    0
                 }
             } else {
                 // if strategy is boundary- but q is END at this depth
                 // we then will have to use p path
-                if d < q.len() {
-                    q.at(d)
+                if cur_depth < q.len() {
+                    q.at(cur_depth)
                 } else {
-                    // TODO: this fallback doesn't work, we may need to create mini-nodes
-                    p.at(d)
+                    (self.root_arity << cur_depth) - 1
                 }
             };
+
+            if !cur_depth_nodes.contains_key(&cur_number) {
+                cur_depth_nodes.insert(
+                    cur_number,
+                    Atom::Node {
+                        payload: AtomPayload {
+                            clock: VClock::<A>::default(),
+                            value: None,
+                        },
+                        children: SiblingsNodes::<V, A>::default(),
+                    },
+                );
+            }
 
             // Now we can just step into the next depth of siblings to keep traversing the tree
             match cur_depth_nodes.get_mut(&cur_number) {
@@ -460,7 +476,7 @@ impl<V: Ord + Clone + Display, A: Actor + Display> LSeq<V, A> {
                     cur_depth_nodes = children;
                 }
                 _ => {
-                    //if d < depth - 1 {
+                    //if cur_depth < depth - 1 {
                     // TODO: what if we didn't go through the complete identifier?
                     // do we have to create more than one new level? it shouldn't ever happen
                     panic!("Unexpected, it seems we need to create more than one new level?");
@@ -878,7 +894,7 @@ mod test {
 
     #[test]
     fn test_insert_at_begining() {
-        let mut lseq = LSeq::<char, u64>::default();
+        let mut lseq = LSeq::<char, u64>::new(10, 32, LSeqStrategy::Alternate);
         let actor = 100;
 
         // Insert A to [] (between BEGIN and END)
@@ -914,6 +930,95 @@ mod test {
         assert_eq!(*c_val, 'C');
         assert_eq!(*b_val, 'B');
         assert_eq!(*a_val, 'A');
+    }
+
+    #[test]
+    fn test_insert_between_begin_and_first() {
+        // in this test we try to insert between BEGIN and the very first Identifier,
+        // in the scenario when there is no available slot between them and therefore a new level
+        // is created with some 0 in the Identifier but ending with a non-0 number, e.g. [0,1]
+        let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryPlus);
+        let actor = 100;
+
+        // Insert A to [] (between BEGIN and END)
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert B to [A] (between BEGIN and A)
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('B', None, Some(a_id.clone()), add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert C to [B, A] (between BEGIN and B)
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('C', None, Some(b_id.clone()), add_ctx.clone());
+        lseq.apply(op);
+
+        // Test identifiers and values are in correct order in the sequence
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 3);
+        let (c_id, c_val, _) = &seq_values[0];
+        let (b_id, b_val, _) = &seq_values[1];
+        let (a_id, a_val, _) = &seq_values[2];
+
+        assert_eq!(*c_id, Identifier::new(&[0, 0, 1]));
+        assert_eq!(*b_id, Identifier::new(&[0, 1]));
+        assert_eq!(*a_id, Identifier::new(&[1]));
+        assert_eq!(*c_val, 'C');
+        assert_eq!(*b_val, 'B');
+        assert_eq!(*a_val, 'A');
+    }
+
+    #[test]
+    fn test_insert_between_last_and_end() {
+        // in this test we try to insert between the very last Identifier and END (i.e. an append)
+        // in the scenario when there is no available slot between them and therefore a new level
+        // is created with some numbers == arity(some-level) - 1 in the Identifier,
+        // but ending with a number < arity(some-level) - 1, e.g.:
+        // if arity(level 0) == 4, and arity(level 1) == 8,
+        // then [3, 6]: where 3 == arity(level 0) - 1, and 6 < arity(level 1) - 1
+        let mut lseq = LSeq::<char, u64>::new(1, 4, LSeqStrategy::BoundaryMinus);
+        let actor = 100;
+
+        // Insert A to [] (between BEGIN and END)
+        let add_ctx = lseq.read_ctx().derive_add_ctx(actor);
+        let op = lseq.insert('A', None, None, add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert B to [A] (between A and END)
+        let seq = lseq.read();
+        let (a_id, _, _) = &seq.val[0];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('B', Some(a_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
+
+        // Insert C to [A, B] (between B and END)
+        let seq = lseq.read();
+        let (b_id, _, _) = &seq.val[1];
+        let add_ctx = seq.derive_add_ctx(actor);
+        let op = lseq.insert('C', Some(b_id.clone()), None, add_ctx.clone());
+        lseq.apply(op);
+
+        // Test identifiers and values are in correct order in the sequence
+        let seq_values = lseq.read().val;
+        println!("FINAL SEQ: {:?}", seq_values);
+        assert_eq!(seq_values.len(), 3);
+        let (a_id, a_val, _) = &seq_values[0];
+        let (b_id, b_val, _) = &seq_values[1];
+        let (c_id, c_val, _) = &seq_values[2];
+
+        assert_eq!(*a_id, Identifier::new(&[2]));
+        assert_eq!(*b_id, Identifier::new(&[3, 6]));
+        assert_eq!(*c_id, Identifier::new(&[3, 7, 14]));
+        assert_eq!(*a_val, 'A');
+        assert_eq!(*b_val, 'B');
+        assert_eq!(*c_val, 'C');
     }
 
     #[test]
@@ -1100,8 +1205,6 @@ mod test {
     }
 
     // TODO: test new insert finding used identifier (it now fails but it shouldn't)
-    // TODO: test edges, insert between BEGIN and Identifier[1] with Boundary+ strategy (not supported now)
-    // TODO: test edges, insert between Identifier[root-arity - 1] and END with Boundary- strategy (not supported now)
     // TODO: test delete before insert, and insert between Identifiers which are still unknown to site
 
     #[test]
