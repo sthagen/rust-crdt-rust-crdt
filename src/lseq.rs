@@ -115,7 +115,6 @@ pub enum Op<T, A: Actor> {
 impl<T: Clone, A: Actor> LSeq<T, A> {
     /// Create an empty LSEQ
     pub fn new(id: A) -> Self {
-        // TODO: LSeq should not take an ID
         LSeq {
             seq: Vec::new(),
             gen: IdentGen::new(id.clone()),
