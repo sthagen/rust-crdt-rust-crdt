@@ -7,3 +7,4 @@ mod map;
 mod mvreg;
 mod orswot;
 mod vclock;
+mod lseq;
