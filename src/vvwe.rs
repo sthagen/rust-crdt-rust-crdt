@@ -83,12 +83,18 @@ pub trait CausalOp<A> {
     fn dot(&self) -> Dot<A>;
 }
 
-impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
-    pub fn new() -> Self {
+impl<A: Actor, T: CausalOp<A>> Default for CausalityBarrier<A, T> {
+    fn default() -> Self {
         CausalityBarrier {
             peers: HashMap::new(),
             buffer: HashMap::new(),
         }
+    }
+}
+
+impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
+    pub fn new() -> Self {
+        CausalityBarrier::default()
     }
 
     pub fn ingest(&mut self, op: T) -> Option<T> {
@@ -128,7 +134,7 @@ impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
     }
 
     fn saw_site_dot(&self, dot: &Dot<A>) -> bool {
-	// TODO: shouldn't need to deconstruct a dot like this
+        // TODO: shouldn't need to deconstruct a dot like this
         match self.peers.get(&dot.actor) {
             Some(ent) => ent.is_ready(dot.counter),
             None => false,
