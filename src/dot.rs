@@ -27,6 +27,11 @@ impl<A: Clone> Dot<A> {
             counter: self.counter + 1,
         }
     }
+
+    /// Increment this dot's counter
+    pub fn apply_inc(&mut self) {
+        self.counter += 1;
+    }
 }
 
 impl<A: Copy> Copy for Dot<A> {}

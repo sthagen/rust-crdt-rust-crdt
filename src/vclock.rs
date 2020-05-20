@@ -114,8 +114,8 @@ impl<A: Actor> CmRDT for VClock<A> {
 
 impl<A: Actor> CvRDT for VClock<A> {
     fn merge(&mut self, other: Self) {
-        for (actor, counter) in other.dots {
-            self.apply_dot(Dot::new(actor, counter));
+        for dot in other.into_iter() {
+            self.apply_dot(dot);
         }
     }
 }
@@ -166,11 +166,7 @@ impl<A: Actor> VClock<A> {
     /// assert_eq!(other_node.get(&"A"), 1);
     /// ```
     pub fn inc(&self, actor: A) -> Dot<A> {
-        let next = self.get(&actor) + 1;
-        Dot {
-            actor,
-            counter: next,
-        }
+        self.dot(actor).inc()
     }
 
     /// Return the associated counter for this actor.

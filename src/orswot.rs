@@ -2,7 +2,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::iter::{once, FromIterator};
 use std::mem;
 
 use serde::{Deserialize, Serialize};
@@ -28,21 +27,21 @@ pub struct Orswot<M: Member, A: Actor> {
 /// they were produced to guarantee convergence.
 ///
 /// Op's are idempotent, that is, applying an Op twice will not have an effect
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Op<M: Member, A: Actor> {
     /// Add members to the set
     Add {
         /// witnessing dot
         dot: Dot<A>,
         /// Members to add
-        members: HashSet<M>,
+        members: Vec<M>,
     },
     /// Remove member from the set
     Rm {
         /// witnessing clock
         clock: VClock<A>,
         /// Members to remove
-        members: HashSet<M>,
+        members: Vec<M>,
     },
 }
 
@@ -72,7 +71,7 @@ impl<M: Member, A: Actor> CmRDT for Orswot<M, A> {
                 self.apply_deferred();
             }
             Op::Rm { clock, members } => {
-                self.apply_rm(members, clock);
+                self.apply_rm(members.into_iter().collect(), clock);
             }
         }
     }
@@ -201,7 +200,7 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     pub fn add(&self, member: M, ctx: AddCtx<A>) -> Op<M, A> {
         Op::Add {
             dot: ctx.dot,
-            members: once(member).collect(),
+            members: std::iter::once(member).collect(),
         }
     }
 
@@ -209,17 +208,15 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     pub fn add_all<I: IntoIterator<Item = M>>(&self, members: I, ctx: AddCtx<A>) -> Op<M, A> {
         Op::Add {
             dot: ctx.dot,
-            members: HashSet::from_iter(members),
+            members: members.into_iter().collect(),
         }
     }
 
     /// Remove a member with a witnessing ctx.
     pub fn rm(&self, member: M, ctx: RmCtx<A>) -> Op<M, A> {
-        let mut members = HashSet::new();
-        members.insert(member);
         Op::Rm {
             clock: ctx.clock,
-            members,
+            members: std::iter::once(member).collect(),
         }
     }
 
@@ -227,11 +224,11 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     pub fn rm_all<I: IntoIterator<Item = M>>(&self, members: I, ctx: RmCtx<A>) -> Op<M, A> {
         Op::Rm {
             clock: ctx.clock,
-            members: HashSet::from_iter(members),
+            members: members.into_iter().collect(),
         }
     }
 
-    /// Remove a member using a witnessing clock.
+    /// Remove members using a witnessing clock.
     fn apply_rm(&mut self, members: HashSet<M>, clock: VClock<A>) {
         for member in members.iter() {
             if let Some(member_clock) = self.entries.get_mut(&member) {
@@ -296,10 +293,11 @@ impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
         let dot = Dot::arbitrary(g);
         let clock = VClock::arbitrary(g);
 
-        let mut members = HashSet::new();
+        let mut members_set = HashSet::new();
         for _ in 0..u8::arbitrary(g) % 10 {
-            members.insert(M::arbitrary(g));
+            members_set.insert(M::arbitrary(g));
         }
+        let members: Vec<_> = members_set.into_iter().collect();
 
         match u8::arbitrary(g) % 2 {
             0 => Op::Add { members, dot },
@@ -312,9 +310,9 @@ impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
         let mut shrunk_ops = Vec::new();
         match self {
             Op::Add { members, dot } => {
-                for m in members.iter() {
+                for (i, _m) in members.iter().enumerate() {
                     let mut shrunk_members = members.clone();
-                    shrunk_members.remove(m);
+                    shrunk_members.remove(i);
 
                     shrunk_ops.push(Op::Add {
                         members: shrunk_members,
@@ -330,9 +328,9 @@ impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
                 });
             }
             Op::Rm { members, clock } => {
-                for m in members.iter() {
+                for (i, _m) in members.iter().enumerate() {
                     let mut shrunk_members = members.clone();
-                    shrunk_members.remove(m);
+                    shrunk_members.remove(i);
 
                     shrunk_ops.push(Op::Rm {
                         members: shrunk_members,
