@@ -23,7 +23,7 @@ quickcheck = "0.9"
 
 [dev-dependencies]
 quickcheck_macros = "0.9"
-derive_more = "*"
+derive_more = "0.99"
 
 [profile.release]
 debug = true
