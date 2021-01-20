@@ -1,21 +1,10 @@
 use std::cmp::{Ordering, PartialOrd};
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
 use crate::quickcheck::{Arbitrary, Gen};
-
-/// A type for modeling a range of Dot's from one actor.
-#[derive(Debug, PartialEq, Eq)]
-pub struct DotRange<A> {
-    /// The actor identifier
-    pub actor: A,
-    /// The counter range representing the dots:
-    /// `Dot::new(actor, counter_range.start) .. Dot::new(actor, counter_range.end)`
-    ///
-    /// Start is inclusive, end is exclusive.
-    pub counter_range: core::ops::Range<u64>,
-}
 
 /// Dot is a version marker for a single actor
 #[derive(Clone, Serialize, Deserialize)]
@@ -73,8 +62,8 @@ impl<A: PartialOrd> PartialOrd for Dot<A> {
     }
 }
 
-impl<A: std::fmt::Debug> std::fmt::Debug for Dot<A> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<A: fmt::Debug> fmt::Debug for Dot<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}.{:?}", self.actor, self.counter)
     }
 }
@@ -95,6 +84,30 @@ impl<A: Arbitrary + Clone> Arbitrary for Dot<A> {
         Box::new(shrunk_dots.into_iter())
     }
 }
+
+/// A type for modeling a range of Dot's from one actor.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DotRange<A> {
+    /// The actor identifier
+    pub actor: A,
+    /// The counter range representing the dots:
+    /// `Dot::new(actor, counter_range.start) .. Dot::new(actor, counter_range.end)`
+    ///
+    /// Start is inclusive, end is exclusive.
+    pub counter_range: core::ops::Range<u64>,
+}
+
+impl<A: fmt::Debug> fmt::Display for DotRange<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?}.({}..{})",
+            self.actor, self.counter_range.start, self.counter_range.end
+        )
+    }
+}
+
+impl<A: fmt::Debug> std::error::Error for DotRange<A> {}
 
 #[cfg(test)]
 mod test {

@@ -1,6 +1,17 @@
+use std::error::Error;
 use std::hash::Hash;
 
 use crate::VClock;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VacuousValidation();
+
+impl std::fmt::Display for VacuousValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self, f)
+    }
+}
+impl std::error::Error for VacuousValidation {}
 
 /// Common Actor type. Actors are unique identifier for every `thing` mutating a VClock.
 /// VClock based CRDT's will need to expose this Actor type to the user.
@@ -10,7 +21,7 @@ impl<A: Ord + Clone + Hash> Actor for A {}
 /// State based CRDT's replicate by transmitting the entire CRDT state.
 pub trait CvRDT {
     /// The validation error returned by `validate_merge`.
-    type Validation;
+    type Validation: Error;
 
     /// Some CRDT's have stricter requirements on how they must be used.
     /// To avoid violating these requirements, CRDT's provide an interface
@@ -51,7 +62,7 @@ pub trait CmRDT {
     type Op;
 
     /// The validation error returned by `validate_op`.
-    type Validation;
+    type Validation: Error;
 
     /// Some CRDT's have stricter requirements on how they must be used.
     /// To avoid violating these requirements, CRDT's provide an interface

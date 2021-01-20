@@ -14,14 +14,14 @@
 
 use std::cmp::{self, Ordering};
 use std::collections::{btree_map, BTreeMap};
-use std::fmt::{self, Display};
+use std::fmt;
 use std::hash::Hash;
 use std::mem;
 
 use serde::{Deserialize, Serialize};
 
 use crate::quickcheck::{Arbitrary, Gen};
-use crate::{Actor, CmRDT, CvRDT, Dot, DotRange, ResetRemove};
+use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, Dot, DotRange, ResetRemove};
 
 /// A `VClock` is a standard vector clock.
 /// It contains a set of "actors" and associated counters.
@@ -64,7 +64,7 @@ impl<A: Actor> PartialOrd for VClock<A> {
     }
 }
 
-impl<A: Actor + Display> Display for VClock<A> {
+impl<A: Actor + fmt::Display> fmt::Display for VClock<A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "<")?;
         for (i, (actor, count)) in self.dots.iter().enumerate() {
@@ -89,7 +89,7 @@ impl<A: Actor> ResetRemove<A> for VClock<A> {
     }
 }
 
-impl<A: Actor> CmRDT for VClock<A> {
+impl<A: Actor + fmt::Debug> CmRDT for VClock<A> {
     type Op = Dot<A>;
     type Validation = DotRange<A>;
 
@@ -125,8 +125,8 @@ impl<A: Actor> CmRDT for VClock<A> {
     }
 }
 
-impl<A: Actor> CvRDT for VClock<A> {
-    type Validation = ();
+impl<A: Actor + fmt::Debug> CvRDT for VClock<A> {
+    type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
         Ok(())
@@ -300,7 +300,7 @@ impl<A: Actor> std::iter::IntoIterator for VClock<A> {
     }
 }
 
-impl<A: Actor> std::iter::FromIterator<Dot<A>> for VClock<A> {
+impl<A: Actor + fmt::Debug> std::iter::FromIterator<Dot<A>> for VClock<A> {
     fn from_iter<I: IntoIterator<Item = Dot<A>>>(iter: I) -> Self {
         let mut clock = VClock::new();
 
@@ -312,7 +312,7 @@ impl<A: Actor> std::iter::FromIterator<Dot<A>> for VClock<A> {
     }
 }
 
-impl<A: Actor> From<Dot<A>> for VClock<A> {
+impl<A: Actor + fmt::Debug> From<Dot<A>> for VClock<A> {
     fn from(dot: Dot<A>) -> Self {
         let mut clock = VClock::new();
         clock.apply(dot);
@@ -320,7 +320,7 @@ impl<A: Actor> From<Dot<A>> for VClock<A> {
     }
 }
 
-impl<A: Actor + Arbitrary> Arbitrary for VClock<A> {
+impl<A: Actor + Arbitrary + fmt::Debug> Arbitrary for VClock<A> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let mut clock = VClock::new();
 

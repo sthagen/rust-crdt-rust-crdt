@@ -1,5 +1,5 @@
-use crdts::lseq::{LSeq, Op};
-use crdts::CmRDT;
+use crdts::lseq::{ident::Identifier, LSeq, Op};
+use crdts::{CmRDT, Dot};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
@@ -37,6 +37,24 @@ impl Arbitrary for OperationList {
         OperationList(ops)
     }
     // implement shrinking ://
+}
+
+#[test]
+fn test_deep_insert() {
+    let path = (0..100)
+        .map(|i| (i, Some('a')))
+        .chain(std::iter::once((0, Some('a'))))
+        .collect();
+
+    let op = Op::Insert {
+        id: Identifier { path },
+        dot: Dot::new('a', 1),
+        val: 12,
+    };
+
+    let mut lseq = LSeq::new('a');
+    lseq.apply(op);
+    assert_eq!(lseq.iter().cloned().collect::<Vec<_>>(), vec![12]);
 }
 
 #[test]

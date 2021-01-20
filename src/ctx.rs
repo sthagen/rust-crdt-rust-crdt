@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{Actor, CmRDT, Dot, VClock};
@@ -36,7 +38,7 @@ pub struct RmCtx<A: Actor> {
     pub clock: VClock<A>,
 }
 
-impl<V, A: Actor> ReadCtx<V, A> {
+impl<V, A: Actor + Debug> ReadCtx<V, A> {
     /// Derives an AddCtx for a given actor from a ReadCtx
     pub fn derive_add_ctx(self, actor: A) -> AddCtx<A> {
         let mut clock = self.add_clock;

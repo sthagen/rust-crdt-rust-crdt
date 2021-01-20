@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-use crate::{CmRDT, CvRDT};
+use crate::{traits::VacuousValidation, CmRDT, CvRDT};
 
 /// A `GSet` is a grow-only set.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -22,7 +22,7 @@ impl<T: Ord> From<GSet<T>> for BTreeSet<T> {
 }
 
 impl<T: Ord + Clone> CvRDT for GSet<T> {
-    type Validation = ();
+    type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
         Ok(())
@@ -48,7 +48,7 @@ impl<T: Ord + Clone> CvRDT for GSet<T> {
 
 impl<T: Ord> CmRDT for GSet<T> {
     type Op = T;
-    type Validation = ();
+    type Validation = VacuousValidation;
 
     fn validate_op(&self, _op: &Self::Op) -> Result<(), Self::Validation> {
         Ok(())

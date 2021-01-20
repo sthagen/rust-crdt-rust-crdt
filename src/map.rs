@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem;
+use std::{fmt, mem};
 
 use serde::{Deserialize, Serialize};
 
@@ -83,7 +83,7 @@ impl<K: Ord, V: Val<A>, A: Actor> Default for Map<K, V, A> {
 
 impl<K: Ord, V: Val<A>, A: Actor> ResetRemove<A> for Map<K, V, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
-        self.entries = mem::replace(&mut self.entries, BTreeMap::new())
+        self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(key, mut entry)| {
                 entry.clock.reset_remove(&clock);
@@ -96,7 +96,7 @@ impl<K: Ord, V: Val<A>, A: Actor> ResetRemove<A> for Map<K, V, A> {
             })
             .collect();
 
-        self.deferred = mem::replace(&mut self.deferred, HashMap::new())
+        self.deferred = mem::take(&mut self.deferred)
             .into_iter()
             .filter_map(|(mut rm_clock, key)| {
                 rm_clock.reset_remove(&clock);
@@ -122,6 +122,14 @@ pub enum CmRDTValidation<V: CmRDT, A> {
     Value(V::Validation),
 }
 
+impl<V: CmRDT + fmt::Debug, A: fmt::Debug> fmt::Display for CmRDTValidation<V, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl<V: CmRDT + fmt::Debug, A: fmt::Debug> std::error::Error for CmRDTValidation<V, A> {}
+
 /// The various validation errors that may occur when using a Map CRDT.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CvRDTValidation<K, V: CvRDT, A> {
@@ -140,7 +148,20 @@ pub enum CvRDTValidation<K, V: CvRDT, A> {
     Value(V::Validation),
 }
 
-impl<K: Ord, V: Val<A>, A: Actor> CmRDT for Map<K, V, A> {
+impl<K: fmt::Debug, V: CvRDT + fmt::Debug, A: fmt::Debug> fmt::Display
+    for CvRDTValidation<K, V, A>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl<K: fmt::Debug, V: CvRDT + fmt::Debug, A: fmt::Debug> std::error::Error
+    for CvRDTValidation<K, V, A>
+{
+}
+
+impl<K: Ord, V: Val<A> + fmt::Debug, A: Actor + fmt::Debug> CmRDT for Map<K, V, A> {
     type Op = Op<K, V, A>;
     type Validation = CmRDTValidation<V, A>;
 
@@ -182,7 +203,9 @@ impl<K: Ord, V: Val<A>, A: Actor> CmRDT for Map<K, V, A> {
     }
 }
 
-impl<K: Ord + Clone, V: Val<A> + CvRDT, A: Actor> CvRDT for Map<K, V, A> {
+impl<K: Ord + Clone + fmt::Debug, V: Val<A> + CvRDT + fmt::Debug, A: Actor + fmt::Debug> CvRDT
+    for Map<K, V, A>
+{
     type Validation = CvRDTValidation<K, V, A>;
 
     fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {
@@ -211,7 +234,7 @@ impl<K: Ord + Clone, V: Val<A> + CvRDT, A: Actor> CvRDT for Map<K, V, A> {
     }
 
     fn merge(&mut self, other: Self) {
-        self.entries = mem::replace(&mut self.entries, BTreeMap::new())
+        self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(key, mut entry)| {
                 if !other.entries.contains_key(&key) {
@@ -380,7 +403,7 @@ impl<K: Ord, V: Val<A>, A: Actor> Map<K, V, A> {
 
     /// apply the pending deferred removes
     fn apply_deferred(&mut self) {
-        let deferred = mem::replace(&mut self.deferred, HashMap::new());
+        let deferred = mem::take(&mut self.deferred);
         for (clock, keys) in deferred {
             self.apply_keyset_rm(keys, clock);
         }

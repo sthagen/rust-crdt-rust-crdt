@@ -1,6 +1,7 @@
 /// Observed-Remove Set With Out Tombstones (ORSWOT), ported directly from `riak_dt`.
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::mem;
 
@@ -51,7 +52,7 @@ impl<M: Member, A: Actor> Default for Orswot<M, A> {
     }
 }
 
-impl<M: Member, A: Actor> CmRDT for Orswot<M, A> {
+impl<M: Member, A: Actor + Debug> CmRDT for Orswot<M, A> {
     type Op = Op<M, A>;
     type Validation = <VClock<A> as CmRDT>::Validation;
 
@@ -100,7 +101,15 @@ pub enum Validation<M, A> {
     },
 }
 
-impl<M: Member, A: Actor> CvRDT for Orswot<M, A> {
+impl<M: Debug, A: Debug> Display for Validation<M, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self, f)
+    }
+}
+
+impl<M: Debug, A: Debug> std::error::Error for Validation<M, A> {}
+
+impl<M: Member + Debug, A: Actor + Debug> CvRDT for Orswot<M, A> {
     type Validation = Validation<M, A>;
 
     fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {
@@ -123,7 +132,7 @@ impl<M: Member, A: Actor> CvRDT for Orswot<M, A> {
 
     /// Merge combines another `Orswot` with this one.
     fn merge(&mut self, other: Self) {
-        self.entries = mem::replace(&mut self.entries, HashMap::new())
+        self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(entry, mut clock)| {
                 if !other.entries.contains_key(&entry) {
@@ -358,14 +367,14 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     }
 
     fn apply_deferred(&mut self) {
-        let deferred = mem::replace(&mut self.deferred, HashMap::new());
+        let deferred = mem::take(&mut self.deferred);
         for (clock, entries) in deferred.into_iter() {
             self.apply_rm(entries, clock)
         }
     }
 }
 
-impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
+impl<A: Actor + Arbitrary + Debug, M: Member + Arbitrary> Arbitrary for Op<M, A> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let dot = Dot::arbitrary(g);
         let clock = VClock::arbitrary(g);
@@ -428,7 +437,7 @@ impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
     }
 }
 
-impl<M: std::fmt::Debug, A: Actor + std::fmt::Debug> std::fmt::Debug for Op<M, A> {
+impl<M: Debug, A: Actor + Debug> Debug for Op<M, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Op::Add { dot, members } => write!(f, "Add({:?}, {:?})", dot, members),

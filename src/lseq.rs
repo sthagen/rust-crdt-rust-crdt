@@ -36,11 +36,13 @@
 //! in 2009 29th IEEE International Conference on Distributed Computing Systems,
 //! Montreal, Quebec, Canada, Jun. 2009, pp. 404–412, doi: 10.1109/ICDCS.2009.75.
 
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
 /// Contains the implementation of the exponential tree for LSeq
 pub mod ident;
-
 use ident::{IdentGen, Identifier};
-use serde::{Deserialize, Serialize};
 
 use crate::{Actor, CmRDT, Dot, VClock};
 
@@ -263,7 +265,7 @@ impl<T: Clone, A: Actor> LSeq<T, A> {
     }
 }
 
-impl<T: Clone, A: Actor> CmRDT for LSeq<T, A> {
+impl<T: Clone, A: Actor + fmt::Debug> CmRDT for LSeq<T, A> {
     type Op = Op<T, A>;
     type Validation = crate::DotRange<A>;
 

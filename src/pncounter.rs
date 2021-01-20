@@ -1,5 +1,6 @@
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 use crate::traits::{CmRDT, CvRDT, ResetRemove};
 use crate::{Actor, Dot, GCounter, VClock};
@@ -55,7 +56,7 @@ impl<A: Actor> Default for PNCounter<A> {
     }
 }
 
-impl<A: Actor> CmRDT for PNCounter<A> {
+impl<A: Actor + Debug> CmRDT for PNCounter<A> {
     type Op = Op<A>;
     type Validation = <GCounter<A> as CmRDT>::Validation;
 
@@ -74,7 +75,7 @@ impl<A: Actor> CmRDT for PNCounter<A> {
     }
 }
 
-impl<A: Actor> CvRDT for PNCounter<A> {
+impl<A: Actor + Debug> CvRDT for PNCounter<A> {
     type Validation = <GCounter<A> as CvRDT>::Validation;
 
     fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {

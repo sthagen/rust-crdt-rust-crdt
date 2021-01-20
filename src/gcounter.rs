@@ -1,7 +1,8 @@
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
-use crate::{Actor, CmRDT, CvRDT, Dot, ResetRemove, VClock};
+use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, Dot, ResetRemove, VClock};
 
 /// `GCounter` is a grow-only witnessed counter.
 ///
@@ -32,9 +33,9 @@ impl<A: Actor> Default for GCounter<A> {
     }
 }
 
-impl<A: Actor> CmRDT for GCounter<A> {
+impl<A: Actor + Debug> CmRDT for GCounter<A> {
     type Op = Dot<A>;
-    type Validation = ();
+    type Validation = VacuousValidation;
 
     fn validate_op(&self, _op: &Self::Op) -> Result<(), Self::Validation> {
         Ok(())
@@ -45,8 +46,8 @@ impl<A: Actor> CmRDT for GCounter<A> {
     }
 }
 
-impl<A: Actor> CvRDT for GCounter<A> {
-    type Validation = ();
+impl<A: Actor + Debug> CvRDT for GCounter<A> {
+    type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
         Ok(())

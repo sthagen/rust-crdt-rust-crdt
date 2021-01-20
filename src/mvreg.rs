@@ -5,7 +5,7 @@ use std::mem;
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::{AddCtx, ReadCtx};
-use crate::{Actor, CmRDT, CvRDT, ResetRemove, VClock};
+use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, ResetRemove, VClock};
 
 /// MVReg (Multi-Value Register)
 /// On concurrent writes, we will keep all values for which
@@ -104,12 +104,12 @@ impl<V: Clone, A: Actor> ResetRemove<A> for MVReg<V, A> {
 
 impl<V, A: Actor> Default for MVReg<V, A> {
     fn default() -> Self {
-        Self::new()
+        Self { vals: Vec::new() }
     }
 }
 
 impl<V, A: Actor> CvRDT for MVReg<V, A> {
-    type Validation = ();
+    type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
         Ok(())
@@ -134,7 +134,7 @@ impl<V, A: Actor> CvRDT for MVReg<V, A> {
 
 impl<V, A: Actor> CmRDT for MVReg<V, A> {
     type Op = Op<V, A>;
-    type Validation = ();
+    type Validation = VacuousValidation;
 
     fn validate_op(&self, _op: &Self::Op) -> Result<(), Self::Validation> {
         Ok(())
@@ -176,10 +176,10 @@ impl<V, A: Actor> CmRDT for MVReg<V, A> {
     }
 }
 
-impl<V, A: Actor> MVReg<V, A> {
+impl<V, A: Actor + fmt::Debug> MVReg<V, A> {
     /// Construct a new empty MVReg
     pub fn new() -> Self {
-        Self { vals: Vec::new() }
+        Default::default()
     }
 
     /// Set the value of the register
