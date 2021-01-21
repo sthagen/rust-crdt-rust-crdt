@@ -5,7 +5,7 @@ use std::mem;
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::{AddCtx, ReadCtx};
-use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, ResetRemove, VClock};
+use crate::{traits::VacuousValidation, CmRDT, CvRDT, ResetRemove, VClock};
 
 /// MVReg (Multi-Value Register)
 /// On concurrent writes, we will keep all values for which
@@ -29,13 +29,13 @@ use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, ResetRemove, VClock}
 /// assert_eq!(r1.read().val, vec!["bob", "alice"]);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MVReg<V, A: Actor> {
+pub struct MVReg<V, A: Ord> {
     vals: Vec<(VClock<A>, V)>,
 }
 
 /// Defines the set of operations over the MVReg
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Op<V, A: Actor> {
+pub enum Op<V, A: Ord> {
     /// Put a value
     Put {
         /// context of the operation
@@ -45,7 +45,7 @@ pub enum Op<V, A: Actor> {
     },
 }
 
-impl<V: Display, A: Actor + Display> Display for MVReg<V, A> {
+impl<V: Display, A: Ord + Display> Display for MVReg<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "|")?;
         for (i, (ctx, val)) in self.vals.iter().enumerate() {
@@ -58,7 +58,7 @@ impl<V: Display, A: Actor + Display> Display for MVReg<V, A> {
     }
 }
 
-impl<V: PartialEq, A: Actor> PartialEq for MVReg<V, A> {
+impl<V: PartialEq, A: Ord> PartialEq for MVReg<V, A> {
     fn eq(&self, other: &Self) -> bool {
         for dot in self.vals.iter() {
             let num_found = other.vals.iter().filter(|d| d == &dot).count();
@@ -82,13 +82,11 @@ impl<V: PartialEq, A: Actor> PartialEq for MVReg<V, A> {
     }
 }
 
-impl<V: Eq, A: Actor> Eq for MVReg<V, A> {}
+impl<V: Eq, A: Ord> Eq for MVReg<V, A> {}
 
-impl<V: Clone, A: Actor> ResetRemove<A> for MVReg<V, A> {
+impl<V, A: Ord> ResetRemove<A> for MVReg<V, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
-        self.vals = self
-            .vals
-            .clone()
+        self.vals = mem::take(&mut self.vals)
             .into_iter()
             .filter_map(|(mut val_clock, val)| {
                 val_clock.reset_remove(&clock);
@@ -102,13 +100,13 @@ impl<V: Clone, A: Actor> ResetRemove<A> for MVReg<V, A> {
     }
 }
 
-impl<V, A: Actor> Default for MVReg<V, A> {
+impl<V, A: Ord> Default for MVReg<V, A> {
     fn default() -> Self {
         Self { vals: Vec::new() }
     }
 }
 
-impl<V, A: Actor> CvRDT for MVReg<V, A> {
+impl<V, A: Ord> CvRDT for MVReg<V, A> {
     type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
@@ -116,7 +114,7 @@ impl<V, A: Actor> CvRDT for MVReg<V, A> {
     }
 
     fn merge(&mut self, other: Self) {
-        self.vals = mem::replace(&mut self.vals, Vec::new())
+        self.vals = mem::take(&mut self.vals)
             .into_iter()
             .filter(|(clock, _)| other.vals.iter().filter(|(c, _)| clock < c).count() == 0)
             .collect();
@@ -132,7 +130,7 @@ impl<V, A: Actor> CvRDT for MVReg<V, A> {
     }
 }
 
-impl<V, A: Actor> CmRDT for MVReg<V, A> {
+impl<V, A: Ord> CmRDT for MVReg<V, A> {
     type Op = Op<V, A>;
     type Validation = VacuousValidation;
 
@@ -176,7 +174,7 @@ impl<V, A: Actor> CmRDT for MVReg<V, A> {
     }
 }
 
-impl<V, A: Actor + fmt::Debug> MVReg<V, A> {
+impl<V, A: Ord + Clone + fmt::Debug> MVReg<V, A> {
     /// Construct a new empty MVReg
     pub fn new() -> Self {
         Default::default()
