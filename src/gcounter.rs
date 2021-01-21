@@ -2,7 +2,7 @@ use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
-use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, Dot, ResetRemove, VClock};
+use crate::{traits::VacuousValidation, CmRDT, CvRDT, Dot, ResetRemove, VClock};
 
 /// `GCounter` is a grow-only witnessed counter.
 ///
@@ -23,17 +23,19 @@ use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, Dot, ResetRemove, VC
 /// assert!(a.read() > b.read());
 /// ```
 #[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
-pub struct GCounter<A: Actor> {
+pub struct GCounter<A: Ord> {
     inner: VClock<A>,
 }
 
-impl<A: Actor> Default for GCounter<A> {
+impl<A: Ord> Default for GCounter<A> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            inner: Default::default(),
+        }
     }
 }
 
-impl<A: Actor + Debug> CmRDT for GCounter<A> {
+impl<A: Ord + Clone + Debug> CmRDT for GCounter<A> {
     type Op = Dot<A>;
     type Validation = VacuousValidation;
 
@@ -46,7 +48,7 @@ impl<A: Actor + Debug> CmRDT for GCounter<A> {
     }
 }
 
-impl<A: Actor + Debug> CvRDT for GCounter<A> {
+impl<A: Ord + Clone + Debug> CvRDT for GCounter<A> {
     type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
@@ -58,18 +60,16 @@ impl<A: Actor + Debug> CvRDT for GCounter<A> {
     }
 }
 
-impl<A: Actor> ResetRemove<A> for GCounter<A> {
+impl<A: Ord + Clone> ResetRemove<A> for GCounter<A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
         self.inner.reset_remove(&clock);
     }
 }
 
-impl<A: Actor> GCounter<A> {
+impl<A: Ord + Clone> GCounter<A> {
     /// Produce a new `GCounter`.
     pub fn new() -> Self {
-        Self {
-            inner: VClock::new(),
-        }
+        Default::default()
     }
 
     /// Generate Op to increment the counter.
