@@ -87,7 +87,7 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash> Default for Map<K, V, A> {
     }
 }
 
-impl<K: Ord, V: Val<A>, A: Ord + Hash + Clone> ResetRemove<A> for Map<K, V, A> {
+impl<K: Ord, V: Val<A>, A: Ord + Hash> ResetRemove<A> for Map<K, V, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
         self.entries = mem::take(&mut self.entries)
             .into_iter()
