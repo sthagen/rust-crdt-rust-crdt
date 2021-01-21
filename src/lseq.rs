@@ -44,11 +44,11 @@ use serde::{Deserialize, Serialize};
 pub mod ident;
 use ident::{IdentGen, Identifier};
 
-use crate::{Actor, CmRDT, Dot, VClock};
+use crate::{CmRDT, Dot, VClock};
 
 /// An `Entry` to the LSEQ consists of:
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd)]
-pub struct Entry<T, A: Actor> {
+pub struct Entry<T, A> {
     /// The identifier of the entry.
     pub id: Identifier<A>,
     /// The site id that inserted this entry.
@@ -63,7 +63,7 @@ pub struct Entry<T, A: Actor> {
 /// It provides an efficient view of the stored sequence, with fast index, insertion and deletion
 /// operations.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd)]
-pub struct LSeq<T, A: Actor> {
+pub struct LSeq<T, A: Ord> {
     seq: Vec<Entry<T, A>>,
     gen: IdentGen<A>,
     clock: VClock<A>,
@@ -71,7 +71,7 @@ pub struct LSeq<T, A: Actor> {
 
 /// Operations that can be performed on an LSeq tree
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd)]
-pub enum Op<T, A: Actor> {
+pub enum Op<T, A> {
     /// Insert an element
     Insert {
         /// Identifier to insert at
@@ -92,7 +92,7 @@ pub enum Op<T, A: Actor> {
     },
 }
 
-impl<T, A: Actor> Op<T, A> {
+impl<T, A> Op<T, A> {
     /// Return the Dot originating the operation
     pub fn dot(&self) -> &Dot<A> {
         match self {
@@ -108,7 +108,7 @@ impl<T, A: Actor> Op<T, A> {
     }
 }
 
-impl<T: Clone, A: Actor> LSeq<T, A> {
+impl<T: Clone, A: Ord + Clone> LSeq<T, A> {
     /// Create an empty LSEQ
     pub fn new(id: A) -> Self {
         LSeq {
@@ -265,7 +265,7 @@ impl<T: Clone, A: Actor> LSeq<T, A> {
     }
 }
 
-impl<T: Clone, A: Actor + fmt::Debug> CmRDT for LSeq<T, A> {
+impl<T: Clone, A: Ord + Clone + fmt::Debug> CmRDT for LSeq<T, A> {
     type Op = Op<T, A>;
     type Validation = crate::DotRange<A>;
 

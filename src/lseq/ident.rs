@@ -1,4 +1,3 @@
-use crate::Actor;
 use bitvec::vec::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -14,7 +13,7 @@ const DEFAULT_INITIAL_BASE: u8 = 3; // start with 2^3
 /// as well as the id of the site that inserted that node. This resolves conflicts where
 /// two sites decide to pick the same child index to allocate a fresh node
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Serialize, Deserialize, Hash)]
-pub struct Identifier<A: Actor> {
+pub struct Identifier<A> {
     /// The path through the lseq tree
     pub path: Vec<(u64, Option<A>)>,
 }
@@ -28,7 +27,7 @@ pub struct Identifier<A: Actor> {
 /// cannot be chosen when allocating fresh nodes. This is to ensure there is always a free node
 /// that can be used to create a lower level.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct IdentGen<A: Actor> {
+pub struct IdentGen<A> {
     /// Base which determines the arity of the root tree node. The arity is doubled at each depth
     initial_base_bits: u8,
     /// Boundary for choosing a new number when allocating an identifier
@@ -39,7 +38,7 @@ pub struct IdentGen<A: Actor> {
     pub site_id: A,
 }
 
-impl<A: Actor> IdentGen<A> {
+impl<A: Ord + Clone> IdentGen<A> {
     /// Create a fresh tree with 0 node.
     pub fn new(site_id: A) -> Self {
         Self::new_with_args(site_id, DEFAULT_INITIAL_BASE, DEFAULT_BOUNDARY)
@@ -264,7 +263,7 @@ impl<A: Actor> IdentGen<A> {
     }
 }
 
-impl<A: quickcheck::Arbitrary + Actor> quickcheck::Arbitrary for Identifier<A> {
+impl<A: quickcheck::Arbitrary> quickcheck::Arbitrary for Identifier<A> {
     fn arbitrary<G: quickcheck::Gen>(g: &mut G) -> Identifier<A> {
         let max_depth = 27; // TODO: where does this come from?
         let min_depth = 1;
