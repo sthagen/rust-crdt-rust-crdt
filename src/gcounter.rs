@@ -60,7 +60,7 @@ impl<A: Ord + Clone + Debug> CvRDT for GCounter<A> {
     }
 }
 
-impl<A: Ord + Clone> ResetRemove<A> for GCounter<A> {
+impl<A: Ord> ResetRemove<A> for GCounter<A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
         self.inner.reset_remove(&clock);
     }

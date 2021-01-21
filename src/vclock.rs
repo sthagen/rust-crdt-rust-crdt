@@ -46,7 +46,7 @@ impl<A: Ord> Default for VClock<A> {
     }
 }
 
-impl<A: Ord + Clone> PartialOrd for VClock<A> {
+impl<A: Ord> PartialOrd for VClock<A> {
     fn partial_cmp(&self, other: &VClock<A>) -> Option<Ordering> {
         // This algorithm is pretty naive, I think there's a way to
         // just track if the ordering changes as we iterate over the
@@ -79,7 +79,7 @@ impl<A: Ord + Display> Display for VClock<A> {
     }
 }
 
-impl<A: Ord + Clone> ResetRemove<A> for VClock<A> {
+impl<A: Ord> ResetRemove<A> for VClock<A> {
     /// Forget any actors that have smaller counts than the
     /// count in the given vclock
     fn reset_remove(&mut self, other: &Self) {
@@ -91,7 +91,7 @@ impl<A: Ord + Clone> ResetRemove<A> for VClock<A> {
     }
 }
 
-impl<A: Ord + Debug + Clone> CmRDT for VClock<A> {
+impl<A: Ord + Clone + Debug> CmRDT for VClock<A> {
     type Op = Dot<A>;
     type Validation = DotRange<A>;
 
@@ -143,7 +143,7 @@ impl<A: Ord + Clone + Debug> CvRDT for VClock<A> {
     }
 }
 
-impl<A: Ord + Clone> VClock<A> {
+impl<A: Ord> VClock<A> {
     /// Returns a new `VClock` instance.
     pub fn new() -> Self {
         Default::default()
@@ -151,11 +151,15 @@ impl<A: Ord + Clone> VClock<A> {
 
     /// Returns a clone of self but with information that is older than given clock is
     /// forgotten
-    pub fn clone_without(&self, base_clock: &Self) -> Self {
+    pub fn clone_without(&self, base_clock: &VClock<A>) -> VClock<A>
+    where
+        A: Clone,
+    {
         let mut cloned = self.clone();
         cloned.reset_remove(&base_clock);
         cloned
     }
+
     /// Generate Op to increment an actor's counter.
     ///
     /// # Examples
@@ -178,7 +182,10 @@ impl<A: Ord + Clone> VClock<A> {
     /// other_node.apply(op);
     /// assert_eq!(other_node.get(&"A"), 1);
     /// ```
-    pub fn inc(&self, actor: A) -> Dot<A> {
+    pub fn inc(&self, actor: A) -> Dot<A>
+    where
+        A: Clone,
+    {
         self.dot(actor).inc()
     }
 
@@ -215,7 +222,10 @@ impl<A: Ord + Clone> VClock<A> {
 
     /// Returns the common elements (same actor and counter)
     /// for two `VClock` instances.
-    pub fn intersection(left: &VClock<A>, right: &Self) -> Self {
+    pub fn intersection(left: &VClock<A>, right: &VClock<A>) -> VClock<A>
+    where
+        A: Clone,
+    {
         let mut dots = BTreeMap::new();
         for (left_actor, left_counter) in left.dots.iter() {
             let right_counter = right.get(left_actor);

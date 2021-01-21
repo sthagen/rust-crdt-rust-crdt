@@ -19,7 +19,7 @@ pub struct LWWReg<V, M> {
     pub marker: M,
 }
 
-impl<V: Default, M: Ord + Default> Default for LWWReg<V, M> {
+impl<V: Default, M: Default> Default for LWWReg<V, M> {
     fn default() -> Self {
         Self {
             val: V::default(),

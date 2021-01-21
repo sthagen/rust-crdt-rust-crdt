@@ -21,7 +21,7 @@ impl<T: Ord> From<GSet<T>> for BTreeSet<T> {
     }
 }
 
-impl<T: Ord + Clone> CvRDT for GSet<T> {
+impl<T: Ord> CvRDT for GSet<T> {
     type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
