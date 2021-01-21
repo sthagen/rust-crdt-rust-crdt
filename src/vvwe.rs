@@ -8,14 +8,15 @@
 
 use std::cmp::Ordering;
 use std::collections::*;
+use std::hash::Hash;
 
 use serde::{self, Deserialize, Serialize};
 
-use crate::{Actor, Dot};
+use crate::Dot;
 
 /// Version Vector with Exceptions
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CausalityBarrier<A: Actor, T: CausalOp<A>> {
+pub struct CausalityBarrier<A: Hash + Eq, T: CausalOp<A>> {
     peers: HashMap<A, VectorEntry>,
     // TODO: this dot here keying the T comes from `T::happens_after()`
     //       Why do we need to store this,
@@ -83,7 +84,7 @@ pub trait CausalOp<A> {
     fn dot(&self) -> Dot<A>;
 }
 
-impl<A: Actor, T: CausalOp<A>> Default for CausalityBarrier<A, T> {
+impl<A: Hash + Eq, T: CausalOp<A>> Default for CausalityBarrier<A, T> {
     fn default() -> Self {
         CausalityBarrier {
             peers: HashMap::new(),
@@ -92,7 +93,7 @@ impl<A: Actor, T: CausalOp<A>> Default for CausalityBarrier<A, T> {
     }
 }
 
-impl<A: Actor, T: CausalOp<A>> CausalityBarrier<A, T> {
+impl<A: Hash + Clone + Eq, T: CausalOp<A>> CausalityBarrier<A, T> {
     pub fn new() -> Self {
         CausalityBarrier::default()
     }
