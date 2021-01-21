@@ -199,13 +199,11 @@ impl<M: Hash + Eq + Clone + Debug, A: Ord + Hash + Clone + Debug> CvRDT for Orsw
     }
 }
 
-impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> ResetRemove<A> for Orswot<M, A> {
+impl<M: Hash + Clone + Eq, A: Ord + Hash> ResetRemove<A> for Orswot<M, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
         self.clock.reset_remove(&clock);
 
-        self.entries = self
-            .entries
-            .clone()
+        self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(val, mut val_clock)| {
                 val_clock.reset_remove(&clock);
@@ -217,9 +215,7 @@ impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> ResetRemove<A> for Orswot<M, A
             })
             .collect();
 
-        self.deferred = self
-            .deferred
-            .clone()
+        self.deferred = mem::take(&mut self.deferred)
             .into_iter()
             .filter_map(|(mut vclock, deferred)| {
                 vclock.reset_remove(&clock);
