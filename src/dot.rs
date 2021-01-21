@@ -15,18 +15,10 @@ pub struct Dot<A> {
     pub counter: u64,
 }
 
-impl<A: Clone> Dot<A> {
+impl<A> Dot<A> {
     /// Build a Dot from an actor and counter
     pub fn new(actor: A, counter: u64) -> Self {
         Self { actor, counter }
-    }
-
-    /// Generate the successor of this dot
-    pub fn inc(&self) -> Self {
-        Self {
-            actor: self.actor.clone(),
-            counter: self.counter + 1,
-        }
     }
 
     /// Increment this dot's counter
@@ -35,6 +27,15 @@ impl<A: Clone> Dot<A> {
     }
 }
 
+impl<A: Clone> Dot<A> {
+    /// Generate the successor of this dot
+    pub fn inc(&self) -> Self {
+        Self {
+            actor: self.actor.clone(),
+            counter: self.counter + 1,
+        }
+    }
+}
 impl<A: Copy> Copy for Dot<A> {}
 
 impl<A: PartialEq> PartialEq for Dot<A> {

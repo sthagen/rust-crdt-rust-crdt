@@ -15,7 +15,8 @@ const DEFAULT_INITIAL_BASE: u8 = 3; // start with 2^3
 /// two sites decide to pick the same child index to allocate a fresh node
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Serialize, Deserialize, Hash)]
 pub struct Identifier<A: Actor> {
-    path: Vec<(u64, Option<A>)>,
+    /// The path through the lseq tree
+    pub path: Vec<(u64, Option<A>)>,
 }
 
 /// A generator for fresh identifiers.

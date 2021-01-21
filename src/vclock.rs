@@ -14,14 +14,14 @@
 
 use std::cmp::{self, Ordering};
 use std::collections::{btree_map, BTreeMap};
-use std::fmt;
+use std::fmt::{self, Debug, Display};
 use std::hash::Hash;
 use std::mem;
 
 use serde::{Deserialize, Serialize};
 
 use crate::quickcheck::{Arbitrary, Gen};
-use crate::{traits::VacuousValidation, Actor, CmRDT, CvRDT, Dot, DotRange, ResetRemove};
+use crate::{traits::VacuousValidation, CmRDT, CvRDT, Dot, DotRange, ResetRemove};
 
 /// A `VClock` is a standard vector clock.
 /// It contains a set of "actors" and associated counters.
@@ -38,13 +38,15 @@ pub struct VClock<A: Ord> {
     pub dots: BTreeMap<A, u64>,
 }
 
-impl<A: Actor> Default for VClock<A> {
+impl<A: Ord> Default for VClock<A> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            dots: BTreeMap::new(),
+        }
     }
 }
 
-impl<A: Actor> PartialOrd for VClock<A> {
+impl<A: Ord + Clone> PartialOrd for VClock<A> {
     fn partial_cmp(&self, other: &VClock<A>) -> Option<Ordering> {
         // This algorithm is pretty naive, I think there's a way to
         // just track if the ordering changes as we iterate over the
@@ -64,7 +66,7 @@ impl<A: Actor> PartialOrd for VClock<A> {
     }
 }
 
-impl<A: Actor + fmt::Display> fmt::Display for VClock<A> {
+impl<A: Ord + Display> Display for VClock<A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "<")?;
         for (i, (actor, count)) in self.dots.iter().enumerate() {
@@ -77,7 +79,7 @@ impl<A: Actor + fmt::Display> fmt::Display for VClock<A> {
     }
 }
 
-impl<A: Actor> ResetRemove<A> for VClock<A> {
+impl<A: Ord + Clone> ResetRemove<A> for VClock<A> {
     /// Forget any actors that have smaller counts than the
     /// count in the given vclock
     fn reset_remove(&mut self, other: &Self) {
@@ -89,16 +91,16 @@ impl<A: Actor> ResetRemove<A> for VClock<A> {
     }
 }
 
-impl<A: Actor + fmt::Debug> CmRDT for VClock<A> {
+impl<A: Ord + Debug + Clone> CmRDT for VClock<A> {
     type Op = Dot<A>;
     type Validation = DotRange<A>;
 
     fn validate_op(&self, dot: &Self::Op) -> Result<(), Self::Validation> {
-        let next_dot = self.inc(dot.actor.clone());
-        if dot > &next_dot {
+        let next_counter = self.get(&dot.actor) + 1;
+        if dot.counter > next_counter {
             Err(DotRange {
                 actor: dot.actor.clone(),
-                counter_range: next_dot.counter..dot.counter,
+                counter_range: next_counter..dot.counter,
             })
         } else {
             Ok(())
@@ -121,11 +123,13 @@ impl<A: Actor + fmt::Debug> CmRDT for VClock<A> {
     /// assert_eq!(v.get(&"A"), 2);
     /// ```
     fn apply(&mut self, dot: Self::Op) {
-        self.apply_dot(dot);
+        if self.get(&dot.actor) < dot.counter {
+            self.dots.insert(dot.actor, dot.counter);
+        }
     }
 }
 
-impl<A: Actor + fmt::Debug> CvRDT for VClock<A> {
+impl<A: Ord + Clone + Debug> CvRDT for VClock<A> {
     type Validation = VacuousValidation;
 
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
@@ -134,17 +138,15 @@ impl<A: Actor + fmt::Debug> CvRDT for VClock<A> {
 
     fn merge(&mut self, other: Self) {
         for dot in other.into_iter() {
-            self.apply_dot(dot);
+            self.apply(dot);
         }
     }
 }
 
-impl<A: Actor> VClock<A> {
+impl<A: Ord + Clone> VClock<A> {
     /// Returns a new `VClock` instance.
     pub fn new() -> Self {
-        Self {
-            dots: BTreeMap::new(),
-        }
+        Default::default()
     }
 
     /// Returns a clone of self but with information that is older than given clock is
@@ -154,14 +156,6 @@ impl<A: Actor> VClock<A> {
         cloned.reset_remove(&base_clock);
         cloned
     }
-
-    /// Apply a Dot to this vclock.
-    fn apply_dot(&mut self, dot: Dot<A>) {
-        if self.get(&dot.actor) < dot.counter {
-            self.dots.insert(dot.actor, dot.counter);
-        }
-    }
-
     /// Generate Op to increment an actor's counter.
     ///
     /// # Examples
@@ -274,11 +268,11 @@ impl<A: Actor> VClock<A> {
 }
 
 /// Generated from calls to VClock::into_iter()
-pub struct IntoIter<A: Actor> {
+pub struct IntoIter<A: Ord> {
     btree_iter: btree_map::IntoIter<A, u64>,
 }
 
-impl<A: Actor> std::iter::Iterator for IntoIter<A> {
+impl<A: Ord> std::iter::Iterator for IntoIter<A> {
     type Item = Dot<A>;
 
     fn next(&mut self) -> Option<Dot<A>> {
@@ -288,7 +282,7 @@ impl<A: Actor> std::iter::Iterator for IntoIter<A> {
     }
 }
 
-impl<A: Actor> std::iter::IntoIterator for VClock<A> {
+impl<A: Ord> std::iter::IntoIterator for VClock<A> {
     type Item = Dot<A>;
     type IntoIter = IntoIter<A>;
 
@@ -300,9 +294,9 @@ impl<A: Actor> std::iter::IntoIterator for VClock<A> {
     }
 }
 
-impl<A: Actor + fmt::Debug> std::iter::FromIterator<Dot<A>> for VClock<A> {
+impl<A: Ord + Clone + Debug> std::iter::FromIterator<Dot<A>> for VClock<A> {
     fn from_iter<I: IntoIterator<Item = Dot<A>>>(iter: I) -> Self {
-        let mut clock = VClock::new();
+        let mut clock = VClock::default();
 
         for dot in iter {
             clock.apply(dot);
@@ -312,17 +306,17 @@ impl<A: Actor + fmt::Debug> std::iter::FromIterator<Dot<A>> for VClock<A> {
     }
 }
 
-impl<A: Actor + fmt::Debug> From<Dot<A>> for VClock<A> {
+impl<A: Ord + Clone + Debug> From<Dot<A>> for VClock<A> {
     fn from(dot: Dot<A>) -> Self {
-        let mut clock = VClock::new();
+        let mut clock = VClock::default();
         clock.apply(dot);
         clock
     }
 }
 
-impl<A: Actor + Arbitrary + fmt::Debug> Arbitrary for VClock<A> {
+impl<A: Ord + Clone + Debug + Arbitrary> Arbitrary for VClock<A> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
-        let mut clock = VClock::new();
+        let mut clock = VClock::default();
 
         for _ in 0..u8::arbitrary(g) % 10 {
             clock.apply(Dot::arbitrary(g));
@@ -332,7 +326,7 @@ impl<A: Actor + Arbitrary + fmt::Debug> Arbitrary for VClock<A> {
     }
 
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-        let mut shrunk_clocks = Vec::new();
+        let mut shrunk_clocks = Vec::default();
         for dot in self.clone().into_iter() {
             let clock_without_dot: Self = self.clone().into_iter().filter(|d| d != &dot).collect();
 

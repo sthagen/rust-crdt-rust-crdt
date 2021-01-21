@@ -9,16 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::ctx::{AddCtx, ReadCtx, RmCtx};
 use crate::quickcheck::{Arbitrary, Gen};
-use crate::{Actor, CmRDT, CvRDT, Dot, ResetRemove, VClock};
-
-/// Trait bound alias for members in a set
-pub trait Member: Clone + Hash + Eq {}
-impl<T: Clone + Hash + Eq> Member for T {}
+use crate::{CmRDT, CvRDT, Dot, ResetRemove, VClock};
 
 /// `Orswot` is an add-biased or-set without tombstones ported from
 /// the riak_dt CRDT library.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Orswot<M: Member, A: Actor> {
+pub struct Orswot<M: Hash + Eq, A: Ord + Hash> {
     pub(crate) clock: VClock<A>,
     pub(crate) entries: HashMap<M, VClock<A>>,
     pub(crate) deferred: HashMap<VClock<A>, HashSet<M>>,
@@ -29,7 +25,7 @@ pub struct Orswot<M: Member, A: Actor> {
 ///
 /// Op's are idempotent, that is, applying an Op twice will not have an effect
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Op<M, A: Actor> {
+pub enum Op<M, A: Ord> {
     /// Add members to the set
     Add {
         /// witnessing dot
@@ -46,13 +42,17 @@ pub enum Op<M, A: Actor> {
     },
 }
 
-impl<M: Member, A: Actor> Default for Orswot<M, A> {
+impl<M: Hash + Eq, A: Ord + Hash> Default for Orswot<M, A> {
     fn default() -> Self {
-        Orswot::new()
+        Orswot {
+            clock: Default::default(),
+            entries: Default::default(),
+            deferred: Default::default(),
+        }
     }
 }
 
-impl<M: Member, A: Actor + Debug> CmRDT for Orswot<M, A> {
+impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone + Debug> CmRDT for Orswot<M, A> {
     type Op = Op<M, A>;
     type Validation = <VClock<A> as CmRDT>::Validation;
 
@@ -109,7 +109,7 @@ impl<M: Debug, A: Debug> Display for Validation<M, A> {
 
 impl<M: Debug, A: Debug> std::error::Error for Validation<M, A> {}
 
-impl<M: Member + Debug, A: Actor + Debug> CvRDT for Orswot<M, A> {
+impl<M: Hash + Eq + Clone + Debug, A: Ord + Hash + Clone + Debug> CvRDT for Orswot<M, A> {
     type Validation = Validation<M, A>;
 
     fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {
@@ -199,7 +199,7 @@ impl<M: Member + Debug, A: Actor + Debug> CvRDT for Orswot<M, A> {
     }
 }
 
-impl<M: Member, A: Actor> ResetRemove<A> for Orswot<M, A> {
+impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> ResetRemove<A> for Orswot<M, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
         self.clock.reset_remove(&clock);
 
@@ -233,14 +233,10 @@ impl<M: Member, A: Actor> ResetRemove<A> for Orswot<M, A> {
     }
 }
 
-impl<M: Member, A: Actor> Orswot<M, A> {
+impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> Orswot<M, A> {
     /// Returns a new `Orswot` instance.
     pub fn new() -> Self {
-        Orswot {
-            clock: VClock::new(),
-            entries: HashMap::new(),
-            deferred: HashMap::new(),
-        }
+        Default::default()
     }
 
     /// Return a snapshot of the ORSWOT clock
@@ -374,7 +370,7 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     }
 }
 
-impl<A: Actor + Arbitrary + Debug, M: Member + Arbitrary> Arbitrary for Op<M, A> {
+impl<A: Ord + Hash + Arbitrary + Debug, M: Hash + Eq + Arbitrary> Arbitrary for Op<M, A> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let dot = Dot::arbitrary(g);
         let clock = VClock::arbitrary(g);
@@ -437,7 +433,7 @@ impl<A: Actor + Arbitrary + Debug, M: Member + Arbitrary> Arbitrary for Op<M, A>
     }
 }
 
-impl<M: Debug, A: Actor + Debug> Debug for Op<M, A> {
+impl<M: Debug, A: Ord + Hash + Debug> Debug for Op<M, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Op::Add { dot, members } => write!(f, "Add({:?}, {:?})", dot, members),

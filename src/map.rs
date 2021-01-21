@@ -1,19 +1,21 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
-use std::{fmt, mem};
+use std::fmt::{self, Debug, Display};
+use std::hash::Hash;
+use std::mem;
 
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::{AddCtx, ReadCtx, RmCtx};
-use crate::{Actor, CmRDT, CvRDT, Dot, ResetRemove, VClock};
+use crate::{CmRDT, CvRDT, Dot, ResetRemove, VClock};
 
 /// Val Trait alias to reduce redundancy in type decl.
-pub trait Val<A: Actor>: Clone + Default + ResetRemove<A> + CmRDT {}
+pub trait Val<A: Ord>: Clone + Default + ResetRemove<A> + CmRDT {}
 
 impl<A, T> Val<A> for T
 where
-    A: Actor,
+    A: Ord,
     T: Clone + Default + ResetRemove<A> + CmRDT,
 {
 }
@@ -28,7 +30,7 @@ where
 /// See examples/reset_remove.rs for an example of reset-remove semantics
 /// in action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Map<K: Ord, V: Val<A>, A: Actor> {
+pub struct Map<K: Ord, V: Val<A>, A: Ord + Hash> {
     // This clock stores the current version of the Map, it should
     // be greator or equal to all Entry.clock's in the Map.
     clock: VClock<A>,
@@ -37,7 +39,7 @@ pub struct Map<K: Ord, V: Val<A>, A: Actor> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Entry<V: Val<A>, A: Actor> {
+struct Entry<V: Val<A>, A: Ord> {
     // The entry clock tells us which actors edited this entry.
     clock: VClock<A>,
 
@@ -47,7 +49,7 @@ struct Entry<V: Val<A>, A: Actor> {
 
 /// Operations which can be applied to the Map CRDT
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Op<K: Ord, V: Val<A>, A: Actor> {
+pub enum Op<K: Ord, V: Val<A>, A: Ord> {
     /// Remove a key from the map
     Rm {
         /// The clock under which we will perform this remove
@@ -66,7 +68,7 @@ pub enum Op<K: Ord, V: Val<A>, A: Actor> {
     },
 }
 
-impl<V: Val<A>, A: Actor> Default for Entry<V, A> {
+impl<V: Val<A>, A: Ord> Default for Entry<V, A> {
     fn default() -> Self {
         Self {
             clock: VClock::default(),
@@ -75,13 +77,17 @@ impl<V: Val<A>, A: Actor> Default for Entry<V, A> {
     }
 }
 
-impl<K: Ord, V: Val<A>, A: Actor> Default for Map<K, V, A> {
+impl<K: Ord, V: Val<A>, A: Ord + Hash> Default for Map<K, V, A> {
     fn default() -> Self {
-        Map::new()
+        Self {
+            clock: Default::default(),
+            entries: Default::default(),
+            deferred: Default::default(),
+        }
     }
 }
 
-impl<K: Ord, V: Val<A>, A: Actor> ResetRemove<A> for Map<K, V, A> {
+impl<K: Ord, V: Val<A>, A: Ord + Hash + Clone> ResetRemove<A> for Map<K, V, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
         self.entries = mem::take(&mut self.entries)
             .into_iter()
@@ -122,13 +128,13 @@ pub enum CmRDTValidation<V: CmRDT, A> {
     Value(V::Validation),
 }
 
-impl<V: CmRDT + fmt::Debug, A: fmt::Debug> fmt::Display for CmRDTValidation<V, A> {
+impl<V: CmRDT + Debug, A: Debug> Display for CmRDTValidation<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self, f)
+        Debug::fmt(&self, f)
     }
 }
 
-impl<V: CmRDT + fmt::Debug, A: fmt::Debug> std::error::Error for CmRDTValidation<V, A> {}
+impl<V: CmRDT + Debug, A: Debug> std::error::Error for CmRDTValidation<V, A> {}
 
 /// The various validation errors that may occur when using a Map CRDT.
 #[derive(Debug, PartialEq, Eq)]
@@ -148,20 +154,15 @@ pub enum CvRDTValidation<K, V: CvRDT, A> {
     Value(V::Validation),
 }
 
-impl<K: fmt::Debug, V: CvRDT + fmt::Debug, A: fmt::Debug> fmt::Display
-    for CvRDTValidation<K, V, A>
-{
+impl<K: Debug, V: CvRDT + Debug, A: Debug> Display for CvRDTValidation<K, V, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self, f)
+        Debug::fmt(&self, f)
     }
 }
 
-impl<K: fmt::Debug, V: CvRDT + fmt::Debug, A: fmt::Debug> std::error::Error
-    for CvRDTValidation<K, V, A>
-{
-}
+impl<K: Debug, V: CvRDT + Debug, A: Debug> std::error::Error for CvRDTValidation<K, V, A> {}
 
-impl<K: Ord, V: Val<A> + fmt::Debug, A: Actor + fmt::Debug> CmRDT for Map<K, V, A> {
+impl<K: Ord, V: Val<A> + Debug, A: Ord + Hash + Clone + Debug> CmRDT for Map<K, V, A> {
     type Op = Op<K, V, A>;
     type Validation = CmRDTValidation<V, A>;
 
@@ -203,7 +204,7 @@ impl<K: Ord, V: Val<A> + fmt::Debug, A: Actor + fmt::Debug> CmRDT for Map<K, V, 
     }
 }
 
-impl<K: Ord + Clone + fmt::Debug, V: Val<A> + CvRDT + fmt::Debug, A: Actor + fmt::Debug> CvRDT
+impl<K: Ord + Clone + Debug, V: Val<A> + CvRDT + Debug, A: Ord + Hash + Clone + Debug> CvRDT
     for Map<K, V, A>
 {
     type Validation = CvRDTValidation<K, V, A>;
@@ -314,14 +315,10 @@ impl<K: Ord + Clone + fmt::Debug, V: Val<A> + CvRDT + fmt::Debug, A: Actor + fmt
     }
 }
 
-impl<K: Ord, V: Val<A>, A: Actor> Map<K, V, A> {
+impl<K: Ord, V: Val<A>, A: Ord + Hash + Clone> Map<K, V, A> {
     /// Constructs an empty Map
     pub fn new() -> Self {
-        Self {
-            clock: VClock::new(),
-            entries: BTreeMap::new(),
-            deferred: HashMap::new(),
-        }
+        Default::default()
     }
 
     /// Returns true if the map has no entries, false otherwise
