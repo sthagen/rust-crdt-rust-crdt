@@ -1,4 +1,4 @@
-use crdts::{map, mvreg, Causal, CmRDT, CvRDT, Dot, MVReg, Map, VClock};
+use crdts::{map, mvreg, CmRDT, CvRDT, Dot, DotRange, MVReg, Map, ResetRemove, VClock};
 use quickcheck::TestResult;
 
 type TActor = u8;
@@ -124,11 +124,12 @@ fn test_update() {
 #[test]
 fn test_remove() {
     let mut m: TMap = Map::new();
+
     let add_ctx = m.len().derive_add_ctx(1);
-
     let mut inner_map: Map<TKey, TVal, TActor> = Map::new();
-    inner_map.apply(inner_map.update(110, add_ctx.clone(), |r, ctx| r.write(0, ctx)));
+    inner_map.apply(inner_map.update(110, add_ctx, |r, ctx| r.write(0, ctx)));
 
+    let add_ctx = m.len().derive_add_ctx(1);
     m.apply(m.update(101, add_ctx, |m, ctx| {
         m.update(110, ctx, |r, ctx| r.write(0, ctx))
     }));
@@ -475,6 +476,60 @@ fn test_op_exchange_same_as_merge_quickcheck1() {
 }
 
 #[test]
+fn test_op_invalid_if_skipping_dot() {
+    let map: TMap = Map::new();
+
+    let op = map::Op::Up {
+        dot: Dot::new(38, 4),
+        key: 216,
+        op: map::Op::Up {
+            dot: Dot::new(38, 1),
+            key: 37,
+            op: mvreg::Op::Put {
+                clock: Dot::new(38, 1).into(),
+                val: 94,
+            },
+        },
+    };
+
+    assert_eq!(
+        map.validate_op(&op),
+        Err(map::CmRDTValidation::SourceOrder(DotRange {
+            actor: 38,
+            counter_range: 1..4
+        }))
+    );
+}
+
+#[test]
+fn test_nested_op_invalid_if_skipping_dot() {
+    let map: TMap = Map::new();
+
+    let op = map::Op::Up {
+        dot: Dot::new(38, 1),
+        key: 216,
+        op: map::Op::Up {
+            dot: Dot::new(38, 2),
+            key: 37,
+            op: mvreg::Op::Put {
+                clock: Dot::new(38, 1).into(),
+                val: 94,
+            },
+        },
+    };
+
+    assert_eq!(
+        map.validate_op(&op),
+        Err(map::CmRDTValidation::Value(
+            map::CmRDTValidation::SourceOrder(DotRange {
+                actor: 38,
+                counter_range: 1..2
+            })
+        ))
+    );
+}
+
+#[test]
 fn test_idempotent_quickcheck1() {
     let ops = vec![
         map::Op::Up {
@@ -761,7 +816,7 @@ quickcheck! {
         m == m_snapshot
     }
 
-    fn prop_forget_with_empty_vclock_is_nop(
+    fn prop_reset_remove_with_empty_vclock_is_nop(
         ops_prim: (u8, Vec<(u8, u8, u8, u8, u8)>)
     ) -> bool {
         let ops = build_ops(ops_prim);
@@ -770,18 +825,18 @@ quickcheck! {
         apply_ops(&mut m, &ops.1);
 
         let m_snapshot = m.clone();
-        m.forget(&VClock::new());
+        m.reset_remove(&VClock::new());
 
         m == m_snapshot
     }
 
-    fn prop_forget_with_map_clock_is_empty_map(
+    fn prop_reset_remove_with_map_clock_is_empty_map(
         ops_prim: (u8, Vec<(u8, u8, u8, u8, u8)>)
     ) -> bool {
         let mut m = TMap::new();
         apply_ops(&mut m, &build_ops(ops_prim).1);
 
-        m.forget(&m.len().rm_clock);
+        m.reset_remove(&m.len().rm_clock);
 
         // Map may still have some deferred removes
         // stored, so it's not neccessarily true that
@@ -789,7 +844,7 @@ quickcheck! {
         m.len().val == 0
     }
 
-    fn prop_forget_than_merge_same_as_merge_than_forget(
+    fn prop_reset_remove_than_merge_same_as_merge_than_reset_remove(
         ops1_prim: (u8, Vec<(u8, u8, u8, u8, u8)>),
         ops2_prim: (u8, Vec<(u8, u8, u8, u8, u8)>),
         vclock: VClock<u8>
@@ -807,17 +862,17 @@ quickcheck! {
         apply_ops(&mut m1, &ops1.1);
         apply_ops(&mut m2, &ops2.1);
 
-        let mut m1_forget_after = m1.clone();
-        let m2_forget_after = m2.clone();
+        let mut m1_reset_remove_after = m1.clone();
+        let m2_reset_remove_after = m2.clone();
 
-        m1.forget(&vclock);
-        m2.forget(&vclock);
+        m1.reset_remove(&vclock);
+        m2.reset_remove(&vclock);
 
         m1.merge(m2);
 
-        m1_forget_after.merge(m2_forget_after);
-        m1_forget_after.forget(&vclock);
+        m1_reset_remove_after.merge(m2_reset_remove_after);
+        m1_reset_remove_after.reset_remove(&vclock);
 
-        TestResult::from_bool(m1_forget_after == m1)
+        TestResult::from_bool(m1_reset_remove_after == m1)
     }
 }

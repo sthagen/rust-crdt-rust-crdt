@@ -1,8 +1,9 @@
-use num_bigint::BigInt;
+use num::bigint::BigInt;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
-use crate::traits::{Causal, CmRDT, CvRDT};
-use crate::{Actor, Dot, GCounter, VClock};
+use crate::traits::{CmRDT, CvRDT, ResetRemove};
+use crate::{Dot, GCounter, VClock};
 
 /// `PNCounter` allows the counter to be both incremented and decremented
 /// by representing the increments (P) and the decrements (N) in separate
@@ -25,7 +26,7 @@ use crate::{Actor, Dot, GCounter, VClock};
 /// assert_eq!(a.read(), 2.into());
 /// ```
 #[derive(Debug, PartialEq, Eq, Clone, Hash, Serialize, Deserialize)]
-pub struct PNCounter<A: Actor> {
+pub struct PNCounter<A: Ord> {
     p: GCounter<A>,
     n: GCounter<A>,
 }
@@ -42,21 +43,32 @@ pub enum Dir {
 /// An Op which is produced through from mutating the counter
 /// Ship these ops to other replicas to have them sync up.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Op<A: Actor> {
+pub struct Op<A: Ord> {
     /// The witnessing dot for this op
     pub dot: Dot<A>,
     /// the direction to move the counter
     pub dir: Dir,
 }
 
-impl<A: Actor> Default for PNCounter<A> {
+impl<A: Ord> Default for PNCounter<A> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            p: Default::default(),
+            n: Default::default(),
+        }
     }
 }
 
-impl<A: Actor> CmRDT for PNCounter<A> {
+impl<A: Ord + Clone + Debug> CmRDT for PNCounter<A> {
     type Op = Op<A>;
+    type Validation = <GCounter<A> as CmRDT>::Validation;
+
+    fn validate_op(&self, op: &Self::Op) -> Result<(), Self::Validation> {
+        match op {
+            Op { dot, dir: Dir::Pos } => self.p.validate_op(dot),
+            Op { dot, dir: Dir::Neg } => self.n.validate_op(dot),
+        }
+    }
 
     fn apply(&mut self, op: Self::Op) {
         match op {
@@ -66,27 +78,31 @@ impl<A: Actor> CmRDT for PNCounter<A> {
     }
 }
 
-impl<A: Actor> CvRDT for PNCounter<A> {
+impl<A: Ord + Clone + Debug> CvRDT for PNCounter<A> {
+    type Validation = <GCounter<A> as CvRDT>::Validation;
+
+    fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {
+        self.p.validate_merge(&other.p)?;
+        self.n.validate_merge(&other.n)
+    }
+
     fn merge(&mut self, other: Self) {
         self.p.merge(other.p);
         self.n.merge(other.n);
     }
 }
 
-impl<A: Actor> Causal<A> for PNCounter<A> {
-    fn forget(&mut self, clock: &VClock<A>) {
-        self.p.forget(&clock);
-        self.n.forget(&clock);
+impl<A: Ord> ResetRemove<A> for PNCounter<A> {
+    fn reset_remove(&mut self, clock: &VClock<A>) {
+        self.p.reset_remove(&clock);
+        self.n.reset_remove(&clock);
     }
 }
 
-impl<A: Actor> PNCounter<A> {
+impl<A: Ord + Clone> PNCounter<A> {
     /// Produce a new `PNCounter`.
     pub fn new() -> Self {
-        Self {
-            p: GCounter::new(),
-            n: GCounter::new(),
-        }
+        Default::default()
     }
 
     /// Generate an Op to increment the counter.
@@ -101,6 +117,22 @@ impl<A: Actor> PNCounter<A> {
     pub fn dec(&self, actor: A) -> Op<A> {
         Op {
             dot: self.n.inc(actor),
+            dir: Dir::Neg,
+        }
+    }
+
+    /// Generate an Op to increment the counter by a number of steps.
+    pub fn inc_many(&self, actor: A, steps: u64) -> Op<A> {
+        Op {
+            dot: self.p.inc_many(actor, steps),
+            dir: Dir::Pos,
+        }
+    }
+
+    /// Generate an Op to decrement the counter by a number of steps.
+    pub fn dec_many(&self, actor: A, steps: u64) -> Op<A> {
+        Op {
+            dot: self.n.inc_many(actor, steps),
             dir: Dir::Neg,
         }
     }
@@ -165,7 +197,7 @@ mod test {
     }
 
     #[test]
-    fn test_basic() {
+    fn test_basic_by_one() {
         let mut a = PNCounter::new();
         assert_eq!(a.read(), 0.into());
 
@@ -180,5 +212,25 @@ mod test {
 
         a.apply(a.inc("A"));
         assert_eq!(a.read(), 2.into());
+    }
+
+    #[test]
+    fn test_basic_by_many() {
+        let mut a = PNCounter::new();
+        assert_eq!(a.read(), 0.into());
+
+        let steps = 3;
+
+        a.apply(a.inc_many("A", steps));
+        assert_eq!(a.read(), steps.into());
+
+        a.apply(a.inc_many("A", steps));
+        assert_eq!(a.read(), (2 * steps).into());
+
+        a.apply(a.dec_many("A", steps));
+        assert_eq!(a.read(), steps.into());
+
+        a.apply(a.inc_many("A", 1));
+        assert_eq!(a.read(), (1 + steps).into());
     }
 }

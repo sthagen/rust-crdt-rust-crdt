@@ -1,6 +1,7 @@
 /// Observed-Remove Set With Out Tombstones (ORSWOT), ported directly from `riak_dt`.
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::mem;
 
@@ -8,16 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::ctx::{AddCtx, ReadCtx, RmCtx};
 use crate::quickcheck::{Arbitrary, Gen};
-use crate::{Actor, Causal, CmRDT, CvRDT, Dot, VClock};
-
-/// Trait bound alias for members in a set
-pub trait Member: Clone + Hash + Eq {}
-impl<T: Clone + Hash + Eq> Member for T {}
+use crate::{CmRDT, CvRDT, Dot, ResetRemove, VClock};
 
 /// `Orswot` is an add-biased or-set without tombstones ported from
 /// the riak_dt CRDT library.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Orswot<M: Member, A: Actor> {
+pub struct Orswot<M: Hash + Eq, A: Ord + Hash> {
     pub(crate) clock: VClock<A>,
     pub(crate) entries: HashMap<M, VClock<A>>,
     pub(crate) deferred: HashMap<VClock<A>, HashSet<M>>,
@@ -27,8 +24,8 @@ pub struct Orswot<M: Member, A: Actor> {
 /// they were produced to guarantee convergence.
 ///
 /// Op's are idempotent, that is, applying an Op twice will not have an effect
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Op<M: Member, A: Actor> {
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Op<M, A: Ord> {
     /// Add members to the set
     Add {
         /// witnessing dot
@@ -45,14 +42,26 @@ pub enum Op<M: Member, A: Actor> {
     },
 }
 
-impl<M: Member, A: Actor> Default for Orswot<M, A> {
+impl<M: Hash + Eq, A: Ord + Hash> Default for Orswot<M, A> {
     fn default() -> Self {
-        Orswot::new()
+        Orswot {
+            clock: Default::default(),
+            entries: Default::default(),
+            deferred: Default::default(),
+        }
     }
 }
 
-impl<M: Member, A: Actor> CmRDT for Orswot<M, A> {
+impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone + Debug> CmRDT for Orswot<M, A> {
     type Op = Op<M, A>;
+    type Validation = <VClock<A> as CmRDT>::Validation;
+
+    fn validate_op(&self, op: &Self::Op) -> Result<(), Self::Validation> {
+        match op {
+            Op::Add { dot, .. } => self.clock.validate_op(dot),
+            Op::Rm { .. } => Ok(()),
+        }
+    }
 
     fn apply(&mut self, op: Self::Op) {
         match op {
@@ -77,10 +86,53 @@ impl<M: Member, A: Actor> CmRDT for Orswot<M, A> {
     }
 }
 
-impl<M: Member, A: Actor> CvRDT for Orswot<M, A> {
+/// The variations that an ORSWOT may fail validation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Validation<M, A> {
+    /// We've detected that two different members were inserted with the same dot.
+    /// This can break associativity.
+    DoubleSpentDot {
+        /// The dot that was double spent
+        dot: Dot<A>,
+        /// Our member inserted with this dot
+        our_member: M,
+        /// Their member inserted with this dot
+        their_member: M,
+    },
+}
+
+impl<M: Debug, A: Debug> Display for Validation<M, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self, f)
+    }
+}
+
+impl<M: Debug, A: Debug> std::error::Error for Validation<M, A> {}
+
+impl<M: Hash + Eq + Clone + Debug, A: Ord + Hash + Clone + Debug> CvRDT for Orswot<M, A> {
+    type Validation = Validation<M, A>;
+
+    fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {
+        for (member, clock) in self.entries.iter() {
+            for (other_member, other_clock) in other.entries.iter() {
+                for Dot { actor, counter } in clock.iter() {
+                    if other_member != member && other_clock.get(&actor) == counter {
+                        return Err(Validation::DoubleSpentDot {
+                            dot: Dot::new(actor.clone(), counter),
+                            our_member: member.clone(),
+                            their_member: other_member.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Merge combines another `Orswot` with this one.
     fn merge(&mut self, other: Self) {
-        self.entries = mem::replace(&mut self.entries, HashMap::new())
+        self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(entry, mut clock)| {
                 if !other.entries.contains_key(&entry) {
@@ -95,7 +147,7 @@ impl<M: Member, A: Actor> CvRDT for Orswot<M, A> {
                         // entry, so add it. But first, we have to remove any
                         // information that may have been known at some point
                         // by the other map about this key and was removed.
-                        clock.forget(&other.clock);
+                        clock.reset_remove(&other.clock);
                         Some((entry, clock))
                     }
                 } else {
@@ -130,7 +182,7 @@ impl<M: Member, A: Actor> CvRDT for Orswot<M, A> {
                     // We have not seen this version of this entry, so we add it.
                     // but first, we have to remove the information on this entry
                     // that we have seen and deleted
-                    clock.forget(&self.clock);
+                    clock.reset_remove(&self.clock);
                     self.entries.insert(entry, clock);
                 }
             }
@@ -147,16 +199,14 @@ impl<M: Member, A: Actor> CvRDT for Orswot<M, A> {
     }
 }
 
-impl<M: Member, A: Actor> Causal<A> for Orswot<M, A> {
-    fn forget(&mut self, clock: &VClock<A>) {
-        self.clock.forget(&clock);
+impl<M: Hash + Clone + Eq, A: Ord + Hash> ResetRemove<A> for Orswot<M, A> {
+    fn reset_remove(&mut self, clock: &VClock<A>) {
+        self.clock.reset_remove(&clock);
 
-        self.entries = self
-            .entries
-            .clone()
+        self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(val, mut val_clock)| {
-                val_clock.forget(&clock);
+                val_clock.reset_remove(&clock);
                 if val_clock.is_empty() {
                     None
                 } else {
@@ -165,12 +215,10 @@ impl<M: Member, A: Actor> Causal<A> for Orswot<M, A> {
             })
             .collect();
 
-        self.deferred = self
-            .deferred
-            .clone()
+        self.deferred = mem::take(&mut self.deferred)
             .into_iter()
             .filter_map(|(mut vclock, deferred)| {
-                vclock.forget(&clock);
+                vclock.reset_remove(&clock);
                 if vclock.is_empty() {
                     None
                 } else {
@@ -181,14 +229,10 @@ impl<M: Member, A: Actor> Causal<A> for Orswot<M, A> {
     }
 }
 
-impl<M: Member, A: Actor> Orswot<M, A> {
+impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> Orswot<M, A> {
     /// Returns a new `Orswot` instance.
     pub fn new() -> Self {
-        Orswot {
-            clock: VClock::new(),
-            entries: HashMap::new(),
-            deferred: HashMap::new(),
-        }
+        Default::default()
     }
 
     /// Return a snapshot of the ORSWOT clock
@@ -232,7 +276,7 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     fn apply_rm(&mut self, members: HashSet<M>, clock: VClock<A>) {
         for member in members.iter() {
             if let Some(member_clock) = self.entries.get_mut(&member) {
-                member_clock.forget(&clock);
+                member_clock.reset_remove(&clock);
                 if member_clock.is_empty() {
                     self.entries.remove(&member);
                 }
@@ -262,6 +306,40 @@ impl<M: Member, A: Actor> Orswot<M, A> {
         }
     }
 
+    /// Gets an iterator over the entries of the `Map`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crdts::{Orswot, CmRDT};
+    ///
+    /// let actor = "actor";
+    ///
+    /// let mut set: Orswot<u8, &'static str> = Default::default();
+    ///
+    /// let add_ctx = set.read_ctx().derive_add_ctx(actor);
+    /// set.apply(set.add(100, add_ctx));
+    ///
+    /// let add_ctx = set.read_ctx().derive_add_ctx(actor);
+    /// set.apply(set.add(50, add_ctx));
+    ///
+    /// let mut items: Vec<_> = set
+    ///     .iter()
+    ///     .map(|item_ctx| *item_ctx.val)
+    ///     .collect();
+    ///
+    /// items.sort();
+    ///
+    /// assert_eq!(items, &[50, 100]);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = ReadCtx<&M, A>> {
+        self.entries.iter().map(move |(m, clock)| ReadCtx {
+            add_clock: self.clock.clone(),
+            rm_clock: clock.clone(),
+            val: m,
+        })
+    }
+
     /// Retrieve the current members.
     pub fn read(&self) -> ReadCtx<HashSet<M>, A> {
         ReadCtx {
@@ -281,14 +359,14 @@ impl<M: Member, A: Actor> Orswot<M, A> {
     }
 
     fn apply_deferred(&mut self) {
-        let deferred = mem::replace(&mut self.deferred, HashMap::new());
+        let deferred = mem::take(&mut self.deferred);
         for (clock, entries) in deferred.into_iter() {
             self.apply_rm(entries, clock)
         }
     }
 }
 
-impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
+impl<A: Ord + Hash + Arbitrary + Debug, M: Hash + Eq + Arbitrary> Arbitrary for Op<M, A> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let dot = Dot::arbitrary(g);
         let clock = VClock::arbitrary(g);
@@ -348,6 +426,15 @@ impl<A: Actor + Arbitrary, M: Member + Arbitrary> Arbitrary for Op<M, A> {
         }
 
         Box::new(shrunk_ops.into_iter())
+    }
+}
+
+impl<M: Debug, A: Ord + Hash + Debug> Debug for Op<M, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Op::Add { dot, members } => write!(f, "Add({:?}, {:?})", dot, members),
+            Op::Rm { clock, members } => write!(f, "Rm({:?}, {:?})", clock, members),
+        }
     }
 }
 

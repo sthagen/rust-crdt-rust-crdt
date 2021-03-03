@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
+use core::convert::Infallible;
 use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
 
 use crate::{CmRDT, CvRDT};
 
@@ -21,7 +23,13 @@ impl<T: Ord> From<GSet<T>> for BTreeSet<T> {
     }
 }
 
-impl<T: Ord + Clone> CvRDT for GSet<T> {
+impl<T: Ord> CvRDT for GSet<T> {
+    type Validation = Infallible;
+
+    fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
+        Ok(())
+    }
+
     /// Merges another `GSet` into this one.
     ///
     /// # Examples
@@ -42,6 +50,11 @@ impl<T: Ord + Clone> CvRDT for GSet<T> {
 
 impl<T: Ord> CmRDT for GSet<T> {
     type Op = T;
+    type Validation = Infallible;
+
+    fn validate_op(&self, _op: &Self::Op) -> Result<(), Self::Validation> {
+        Ok(())
+    }
 
     fn apply(&mut self, op: Self::Op) {
         self.insert(op);

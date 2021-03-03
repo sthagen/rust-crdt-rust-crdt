@@ -10,11 +10,8 @@
 #![crate_type = "lib"]
 #![deny(missing_docs)]
 
-mod error;
-pub use crate::error::Error;
-
 mod traits;
-pub use crate::traits::{Actor, Causal, CmRDT, CvRDT, FunkyCmRDT, FunkyCvRDT};
+pub use crate::traits::{Actor, CmRDT, CvRDT, ResetRemove};
 
 /// This module contains a Last-Write-Wins Register.
 pub mod lwwreg;
@@ -22,11 +19,17 @@ pub mod lwwreg;
 /// This module contains a Multi-Value Register.
 pub mod mvreg;
 
+/// This module contains a Merkle-Dag Register.
+pub mod merkle_reg;
+
 /// This module contains the Vector Clock
 pub mod vclock;
 
 /// This module contains the Dot (Actor + Sequence Number)
 pub mod dot;
+
+/// This module contains a dense Identifier.
+pub mod identifier;
 
 /// This module contains an Observed-Remove Set With Out Tombstones.
 pub mod orswot;
@@ -36,6 +39,9 @@ pub mod gcounter;
 
 /// This module contains a Grow-only Set.
 pub mod gset;
+
+/// This module contains a Grow-only List.
+pub mod glist;
 
 /// This module contains a Positive-Negative Counter.
 pub mod pncounter;
@@ -47,15 +53,16 @@ pub mod map;
 pub mod ctx;
 
 /// This module contains a Sequence.
-pub mod lseq;
+pub mod list;
 
 /// Version Vector with Exceptions
 pub mod vvwe;
 
 /// Top-level re-exports for CRDT structures.
 pub use crate::{
-    dot::Dot, gcounter::GCounter, gset::GSet, lwwreg::LWWReg, map::Map, mvreg::MVReg,
-    orswot::Orswot, pncounter::PNCounter, vclock::VClock,
+    dot::Dot, dot::DotRange, dot::OrdDot, gcounter::GCounter, gset::GSet, identifier::Identifier,
+    list::List, lwwreg::LWWReg, map::Map, mvreg::MVReg, orswot::Orswot, pncounter::PNCounter,
+    vclock::VClock,
 };
 
 /// A re-export of the quickcheck crate for use in property based testing of user code
