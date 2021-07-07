@@ -1,4 +1,3 @@
-[![Build Status](https://travis-ci.org/rust-crdt/rust-crdt.svg?branch=master)](https://travis-ci.org/rust-crdt/rust-crdt)
 [![crates.io](https://img.shields.io/crates/v/crdts.svg)](https://crates.io/crates/crdts)
 [![docs.rs](https://docs.rs/crdts/badge.svg)](https://docs.rs/crdts)
 
