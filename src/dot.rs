@@ -95,7 +95,7 @@ impl<A: Arbitrary + Clone> Arbitrary for Dot<A> {
 
 /// An ordered dot.
 /// dot's are first ordered by actor, dots from the same actor are ordered by counter.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub struct OrdDot<A: Ord> {
     /// The actor who created this dot.
     pub actor: A,
@@ -125,6 +125,12 @@ pub struct DotRange<A> {
     ///
     /// Start is inclusive, end is exclusive.
     pub counter_range: core::ops::Range<u64>,
+}
+
+impl<A: fmt::Debug + Ord> fmt::Display for OrdDot<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}.{}", self.actor, self.counter)
+    }
 }
 
 impl<A: fmt::Debug> fmt::Display for DotRange<A> {
