@@ -84,8 +84,8 @@ impl<A: Ord> ResetRemove<A> for VClock<A> {
     /// count in the given vclock
     fn reset_remove(&mut self, other: &Self) {
         for Dot { actor, counter } in other.iter() {
-            if counter >= self.get(&actor) {
-                self.dots.remove(&actor);
+            if counter >= self.get(actor) {
+                self.dots.remove(actor);
             }
         }
     }
@@ -156,7 +156,7 @@ impl<A: Ord> VClock<A> {
         A: Clone,
     {
         let mut cloned = self.clone();
-        cloned.reset_remove(&base_clock);
+        cloned.reset_remove(base_clock);
         cloned
     }
 

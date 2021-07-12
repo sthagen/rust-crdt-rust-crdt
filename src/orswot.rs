@@ -116,7 +116,7 @@ impl<M: Hash + Eq + Clone + Debug, A: Ord + Hash + Clone + Debug> CvRDT for Orsw
         for (member, clock) in self.entries.iter() {
             for (other_member, other_clock) in other.entries.iter() {
                 for Dot { actor, counter } in clock.iter() {
-                    if other_member != member && other_clock.get(&actor) == counter {
+                    if other_member != member && other_clock.get(actor) == counter {
                         return Err(Validation::DoubleSpentDot {
                             dot: Dot::new(actor.clone(), counter),
                             our_member: member.clone(),
@@ -161,7 +161,7 @@ impl<M: Hash + Eq + Clone + Debug, A: Ord + Hash + Clone + Debug> CvRDT for Orsw
                 // SUBTLE: this entry is present in both orswots, BUT that doesn't mean we
                 // shouldn't drop it!
                 // Perfectly possible that an item in both sets should be dropped
-                let mut common = VClock::intersection(&clock, &our_clock);
+                let mut common = VClock::intersection(&clock, our_clock);
                 common.merge(clock.clone_without(&self.clock));
                 common.merge(our_clock.clone_without(&other.clock));
                 if common.is_empty() {
@@ -201,12 +201,12 @@ impl<M: Hash + Eq + Clone + Debug, A: Ord + Hash + Clone + Debug> CvRDT for Orsw
 
 impl<M: Hash + Clone + Eq, A: Ord + Hash> ResetRemove<A> for Orswot<M, A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
-        self.clock.reset_remove(&clock);
+        self.clock.reset_remove(clock);
 
         self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(val, mut val_clock)| {
-                val_clock.reset_remove(&clock);
+                val_clock.reset_remove(clock);
                 if val_clock.is_empty() {
                     None
                 } else {
@@ -218,7 +218,7 @@ impl<M: Hash + Clone + Eq, A: Ord + Hash> ResetRemove<A> for Orswot<M, A> {
         self.deferred = mem::take(&mut self.deferred)
             .into_iter()
             .filter_map(|(mut vclock, deferred)| {
-                vclock.reset_remove(&clock);
+                vclock.reset_remove(clock);
                 if vclock.is_empty() {
                     None
                 } else {
@@ -275,10 +275,10 @@ impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> Orswot<M, A> {
     /// Remove members using a witnessing clock.
     fn apply_rm(&mut self, members: HashSet<M>, clock: VClock<A>) {
         for member in members.iter() {
-            if let Some(member_clock) = self.entries.get_mut(&member) {
+            if let Some(member_clock) = self.entries.get_mut(member) {
                 member_clock.reset_remove(&clock);
                 if member_clock.is_empty() {
-                    self.entries.remove(&member);
+                    self.entries.remove(member);
                 }
             }
         }
@@ -297,7 +297,7 @@ impl<M: Hash + Clone + Eq, A: Ord + Hash + Clone> Orswot<M, A> {
 
     /// Check if the set contains a member
     pub fn contains(&self, member: &M) -> ReadCtx<bool, A> {
-        let member_clock_opt = self.entries.get(&member);
+        let member_clock_opt = self.entries.get(member);
         let exists = member_clock_opt.is_some();
         ReadCtx {
             add_clock: self.clock.clone(),
