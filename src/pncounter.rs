@@ -94,8 +94,8 @@ impl<A: Ord + Clone + Debug> CvRDT for PNCounter<A> {
 
 impl<A: Ord> ResetRemove<A> for PNCounter<A> {
     fn reset_remove(&mut self, clock: &VClock<A>) {
-        self.p.reset_remove(&clock);
-        self.n.reset_remove(&clock);
+        self.p.reset_remove(clock);
+        self.n.reset_remove(clock);
     }
 }
 

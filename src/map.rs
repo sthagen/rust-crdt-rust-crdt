@@ -92,8 +92,8 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash> ResetRemove<A> for Map<K, V, A> {
         self.entries = mem::take(&mut self.entries)
             .into_iter()
             .filter_map(|(key, mut entry)| {
-                entry.clock.reset_remove(&clock);
-                entry.val.reset_remove(&clock);
+                entry.clock.reset_remove(clock);
+                entry.val.reset_remove(clock);
                 if entry.clock.is_empty() {
                     None // remove this entry since its been forgotten
                 } else {
@@ -105,7 +105,7 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash> ResetRemove<A> for Map<K, V, A> {
         self.deferred = mem::take(&mut self.deferred)
             .into_iter()
             .filter_map(|(mut rm_clock, key)| {
-                rm_clock.reset_remove(&clock);
+                rm_clock.reset_remove(clock);
                 if rm_clock.is_empty() {
                     None // this deferred remove has been forgotten
                 } else {
@@ -114,7 +114,7 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash> ResetRemove<A> for Map<K, V, A> {
             })
             .collect();
 
-        self.clock.reset_remove(&clock);
+        self.clock.reset_remove(clock);
     }
 }
 
@@ -171,14 +171,14 @@ impl<K: Ord, V: Val<A> + Debug, A: Ord + Hash + Clone + Debug> CmRDT for Map<K, 
             Op::Rm { .. } => Ok(()),
             Op::Up { dot, key, op } => {
                 self.clock
-                    .validate_op(&dot)
+                    .validate_op(dot)
                     .map_err(CmRDTValidation::SourceOrder)?;
-                let entry = self.entries.get(&key).cloned().unwrap_or_default();
+                let entry = self.entries.get(key).cloned().unwrap_or_default();
                 entry
                     .clock
-                    .validate_op(&dot)
+                    .validate_op(dot)
                     .map_err(CmRDTValidation::SourceOrder)?;
-                entry.val.validate_op(&op).map_err(CmRDTValidation::Value)
+                entry.val.validate_op(op).map_err(CmRDTValidation::Value)
             }
         }
     }
@@ -213,7 +213,7 @@ impl<K: Ord + Clone + Debug, V: Val<A> + CvRDT + Debug, A: Ord + Hash + Clone + 
         for (key, entry) in self.entries.iter() {
             for (other_key, other_entry) in other.entries.iter() {
                 for Dot { actor, counter } in entry.clock.iter() {
-                    if other_key != key && other_entry.clock.get(&actor) == counter {
+                    if other_key != key && other_entry.clock.get(actor) == counter {
                         return Err(CvRDTValidation::DoubleSpentDot {
                             dot: Dot::new(actor.clone(), counter),
                             our_key: key.clone(),
@@ -342,7 +342,7 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash + Clone> Map<K, V, A> {
     /// Retrieve value stored under a key
     pub fn get(&self, key: &K) -> ReadCtx<Option<V>, A> {
         let add_clock = self.clock.clone();
-        let entry_opt = self.entries.get(&key);
+        let entry_opt = self.entries.get(key);
         ReadCtx {
             add_clock,
             rm_clock: entry_opt
@@ -368,7 +368,7 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash + Clone> Map<K, V, A> {
         let key = key.into();
         let dot = ctx.dot.clone();
         let op = match self.entries.get(&key).map(|e| &e.val) {
-            Some(data) => f(&data, ctx),
+            Some(data) => f(data, ctx),
             None => f(&V::default(), ctx),
         };
 
@@ -409,12 +409,12 @@ impl<K: Ord, V: Val<A>, A: Ord + Hash + Clone> Map<K, V, A> {
     /// Apply a set of key removals given a clock.
     fn apply_keyset_rm(&mut self, mut keyset: BTreeSet<K>, clock: VClock<A>) {
         for key in keyset.iter() {
-            if let Some(entry) = self.entries.get_mut(&key) {
+            if let Some(entry) = self.entries.get_mut(key) {
                 entry.clock.reset_remove(&clock);
                 if entry.clock.is_empty() {
                     // The entry clock says we have no info on this entry.
                     // So remove the entry
-                    self.entries.remove(&key);
+                    self.entries.remove(key);
                 } else {
                     // The entry clock is not empty so this means we still
                     // have some information on this entry, keep it.
