@@ -1,29 +1,42 @@
 [package]
 name = "crdts"
 description = "Practical, serializable, thoroughly tested CRDTs"
-version = "7.0.0"
+version = "7.1.0"
 authors = ["Tyler Neely <t@jujit.su>", "David Rusu <davidrusu.me@gmail.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/rust-crdt/rust-crdt"
 repository = "https://github.com/rust-crdt/rust-crdt"
 documentation = "https://docs.rs/crdts"
 keywords = ["crdt", "data-structures", "distributed-systems", "vector-clock", "riak"]
-edition = "2018"
+edition = "2021"
+resolver = "2"
 
 [[test]]
 name = "test"
 path = "test/test.rs"
 
+[features]
+default = ["quickcheck", "num", "merkle"]
+quickcheck = ["dep:quickcheck"]
+num = ["dep:num"]
+merkle = ["dep:tiny-keccak"]
+
 [dependencies]
-num = {version = "0.3.1", features = ["serde"]}
 serde = { version = "~1.0.91", features = ["derive"] }
-rand = "0.7"
-quickcheck = "0.9"
-tiny-keccak = { version = "2.0.2", features = ["sha3"] }
+
+# glist, list, pncounter, gcounter
+num = {version = "0.3.1", features = ["serde"], optional = true}
+
+# merkle-reg
+tiny-keccak = { version = "2.0.2", features = ["sha3"], optional = true }
+
+# testing
+quickcheck = {version = "0.9", optional = true}
 
 [dev-dependencies]
 quickcheck_macros = "0.9"
 derive_more = "0.99"
+rand = "0.7"
 
 [profile.release]
 debug = true
