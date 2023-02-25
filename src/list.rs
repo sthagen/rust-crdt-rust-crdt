@@ -185,7 +185,7 @@ impl<T, A: Ord + Clone> List<T, A> {
     /// assert_eq!(list.read_into::<Vec<_>>(), vec![1, 2, 3]);
     /// ```
     pub fn read_into<C: FromIterator<T>>(self) -> C {
-        self.seq.into_iter().map(|(_, v)| v).collect()
+        self.seq.into_values().collect()
     }
 
     /// Get the elements represented by the List.
@@ -201,6 +201,13 @@ impl<T, A: Ord + Clone> List<T, A> {
     /// Get an element at a position in the sequence represented by the List.
     pub fn position(&self, ix: usize) -> Option<&T> {
         self.iter().nth(ix)
+    }
+
+    /// Find an identifer by an index.
+    pub fn position_entry(&self, id: &Identifier<OrdDot<A>>) -> Option<usize> {
+        self.iter_entries()
+            .enumerate()
+            .find_map(|(ix, (ident, _))| if ident == id { Some(ix) } else { None })
     }
 
     /// Finds an element by its Identifier.
