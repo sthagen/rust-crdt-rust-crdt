@@ -134,7 +134,6 @@ impl<V: PartialEq, M: Ord> LWWReg<V, M> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use quickcheck::{quickcheck, TestResult};
 
     #[test]
     fn test_default() {
@@ -176,16 +175,18 @@ mod test {
         assert_eq!(reg, LWWReg { val: 32, marker: 2 });
     }
 
-    fn build_from_prim(prim: (u8, u16)) -> LWWReg<u8, (u16, u8)> {
-        // we make the marker a tuple so that we avoid conflicts
-        LWWReg {
-            val: prim.0,
-            marker: (prim.1, prim.0),
-        }
-    }
+    #[cfg(feature = "quickcheck")]
+    mod prop_tests {
+        use super::*;
+        use quickcheck::TestResult;
+        use quickcheck_macros::quickcheck;
 
-    quickcheck! {
-        fn prop_associative(r1_prim: (u8, u16), r2_prim: (u8, u16), r3_prim: (u8, u16)) -> TestResult {
+        #[quickcheck]
+        fn prop_associative(
+            r1_prim: (u8, u16),
+            r2_prim: (u8, u16),
+            r3_prim: (u8, u16),
+        ) -> TestResult {
             let mut r1 = build_from_prim(r1_prim);
             let mut r2 = build_from_prim(r2_prim);
             let r3 = build_from_prim(r3_prim);
@@ -212,6 +213,7 @@ mod test {
             TestResult::from_bool(r1 == r1_snapshot)
         }
 
+        #[quickcheck]
         fn prop_commutative(r1_prim: (u8, u16), r2_prim: (u8, u16)) -> TestResult {
             let mut r1 = build_from_prim(r1_prim);
             let mut r2 = build_from_prim(r2_prim);
@@ -231,6 +233,7 @@ mod test {
             TestResult::from_bool(r1 == r2)
         }
 
+        #[quickcheck]
         fn prop_idempotent(r_prim: (u8, u16)) -> bool {
             let mut r = build_from_prim(r_prim);
             let r_snapshot = r.clone();
@@ -239,6 +242,14 @@ mod test {
             r.merge(r_snapshot.clone());
             // r ^ r = r
             r == r_snapshot
+        }
+
+        fn build_from_prim(prim: (u8, u16)) -> LWWReg<u8, (u16, u8)> {
+            // we make the marker a tuple so that we avoid conflicts
+            LWWReg {
+                val: prim.0,
+                marker: (prim.1, prim.0),
+            }
         }
     }
 }

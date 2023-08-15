@@ -232,7 +232,7 @@ impl<T, A: Ord + Clone> List<T, A> {
 
     /// Get the last Entry of the sequence represented by the List.
     pub fn last_entry(&self) -> Option<(&Identifier<OrdDot<A>>, &T)> {
-        self.seq.iter().rev().next()
+        self.seq.iter().next_back()
     }
 
     /// Insert value with at the given identifier in the List
@@ -275,5 +275,15 @@ impl<T, A: Ord + Clone + fmt::Debug> CmRDT for List<T, A> {
             Op::Insert { id, val } => self.insert(id, val),
             Op::Delete { id, .. } => self.delete(&id),
         }
+    }
+}
+
+impl<T, A: Ord> IntoIterator for List<T, A> {
+    type Item = T;
+
+    type IntoIter = std::collections::btree_map::IntoValues<Identifier<OrdDot<A>>, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.seq.into_values()
     }
 }

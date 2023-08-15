@@ -117,7 +117,7 @@ impl<T: Ord + Clone> GList<T> {
 
     /// Get last element of the sequence represented by the list.
     pub fn last(&self) -> Option<&Identifier<T>> {
-        self.iter().rev().next()
+        self.iter().next_back()
     }
 }
 
@@ -153,7 +153,7 @@ use quickcheck::{Arbitrary, Gen};
 
 #[cfg(feature = "quickcheck")]
 impl<T: Arbitrary> Arbitrary for Op<T> {
-    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+    fn arbitrary(g: &mut Gen) -> Self {
         let id = Identifier::arbitrary(g);
         Op::Insert { id }
     }

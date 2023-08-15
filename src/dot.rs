@@ -79,7 +79,7 @@ use quickcheck::{Arbitrary, Gen};
 
 #[cfg(feature = "quickcheck")]
 impl<A: Arbitrary + Clone> Arbitrary for Dot<A> {
-    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+    fn arbitrary(g: &mut Gen) -> Self {
         Dot {
             actor: A::arbitrary(g),
             counter: u64::arbitrary(g) % 50,
@@ -147,7 +147,7 @@ impl<A: fmt::Debug> fmt::Display for DotRange<A> {
 
 impl<A: fmt::Debug> std::error::Error for DotRange<A> {}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "quickcheck"))]
 mod test {
     use super::*;
     use quickcheck_macros::quickcheck;
